@@ -628,7 +628,8 @@ app.post("/api/validate", async (req, res) => {
           last_validation_at: new Date().toISOString(),
           next_validation_at: nextValidation.toISOString(),
           version: version || license.version,
-          last_ip: ip
+          last_ip: ip,
+          device_id: device_id
         })
         .eq("license_key", license_key);
 
@@ -815,6 +816,22 @@ app.post("/api/auth/login", async (req, res) => {
           // SINCRONIZAÇÃO: Atualizar cache do utilizador
           const currentHash = license.login_password; // Pode ter sido atualizado na auto-migração
           const perms = JSON.stringify(["admin", "all"]);
+          
+          // HEARTBEAT: Atualizar Supabase com dados do hardware e acesso
+          const currentDeviceId = getDeviceId();
+          const currentIp = req.ip;
+          
+          if (supabase) {
+            await supabase
+              .from("licenses")
+              .update({
+                last_validation_at: new Date().toISOString(),
+                device_id: currentDeviceId,
+                last_ip: currentIp
+              })
+              .eq("license_key", license.license_key);
+            console.log(`[HEARTBEAT] Atualizado via Login: ${license.license_key}`);
+          }
           
           await new Promise((resolve) => {
             db.run(`
