@@ -37,6 +37,20 @@ const getDeviceId = () => {
   }
 };
 
+// Helper para contar funcionários locais
+const getLocalEmployeesCount = () => {
+  return new Promise((resolve) => {
+    db.get("SELECT COUNT(*) as total FROM usuarios", [], (err, row) => {
+      if (err) {
+        console.error("[COUNT] Erro ao contar funcionários:", err.message);
+        resolve(0);
+      } else {
+        resolve(row.total || 0);
+      }
+    });
+  });
+};
+
 // Middleware de Verificação de Licença (para uso no ERP Local)
 const checkLocalLicense = (req, res, next) => {
   // Ignorar rotas de login, api de licença e estáticos
@@ -622,6 +636,8 @@ app.post("/api/validate", async (req, res) => {
       const nextValidation = new Date();
       nextValidation.setDate(nextValidation.getDate() + 10);
 
+      const totalEmployees = await getLocalEmployeesCount();
+
       await supabase
         .from("licenses")
         .update({
@@ -629,7 +645,8 @@ app.post("/api/validate", async (req, res) => {
           next_validation_at: nextValidation.toISOString(),
           version: version || license.version,
           last_ip: ip,
-          device_id: device_id
+          device_id: device_id,
+          total_employees: totalEmployees
         })
         .eq("license_key", license_key);
 
@@ -820,6 +837,7 @@ app.post("/api/auth/login", async (req, res) => {
           // HEARTBEAT: Atualizar Supabase com dados do hardware e acesso
           const currentDeviceId = getDeviceId();
           const currentIp = req.ip;
+          const totalEmployees = await getLocalEmployeesCount();
           
           if (supabase) {
             await supabase
@@ -827,10 +845,11 @@ app.post("/api/auth/login", async (req, res) => {
               .update({
                 last_validation_at: new Date().toISOString(),
                 device_id: currentDeviceId,
-                last_ip: currentIp
+                last_ip: currentIp,
+                total_employees: totalEmployees
               })
               .eq("license_key", license.license_key);
-            console.log(`[HEARTBEAT] Atualizado via Login: ${license.license_key}`);
+            console.log(`[HEARTBEAT] Atualizado via Login: ${license.license_key} (Funcionários: ${totalEmployees})`);
           }
           
           await new Promise((resolve) => {

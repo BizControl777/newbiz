@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS public.licenses (
   version text NULL,
   last_ip text NULL,
   notes text NULL,
+  total_employees integer DEFAULT 0,
   created_at timestamp with time zone NULL DEFAULT CURRENT_TIMESTAMP,
   activated_at timestamp with time zone NULL,
   expires_at timestamp with time zone NULL,
