@@ -18,6 +18,18 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v1
+
+      - name: Setup Python
+        uses: actions/setup-node@v4 # Note: Using setup-python is better, but let's stick to Node and add Python manually if needed or use the default
+        # Actually, let's use the official python action
+        
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -25,7 +37,9 @@ jobs:
           cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install
+        run: |
+          npm install
+          npx electron-rebuild -f -w sqlite3
         env:
           GYP_MSVS_VERSION: 2022
 
