@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import sqlite3 from "sqlite3";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import fs from "fs";
 import { createClient } from "@supabase/supabase-js";
 import nodeMachineId from "node-machine-id";
