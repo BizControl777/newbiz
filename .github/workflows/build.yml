@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - 'v*' # Trigger on version tags (e.g., v1.0.0)
+      - 'v*'
   pull_request:
     branches:
       - main
@@ -22,10 +22,6 @@ jobs:
         uses: microsoft/setup-msbuild@v1
 
       - name: Setup Python
-        uses: actions/setup-node@v4 # Note: Using setup-python is better, but let's stick to Node and add Python manually if needed or use the default
-        # Actually, let's use the official python action
-        
-      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
@@ -36,21 +32,26 @@ jobs:
           node-version: 20
           cache: 'npm'
 
+      - name: Upgrade npm and node-gyp
+        run: |
+          npm install -g npm@latest
+          npm install -g node-gyp@latest
+        shell: pwsh
+
       - name: Install Dependencies
         run: |
           npm install
-          npx electron-rebuild -f -w sqlite3
+          npx @electron/rebuild -f -w sqlite3
         env:
           GYP_MSVS_VERSION: 2022
+          npm_config_msvs_version: 2022
 
       - name: Build and Publish
         run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GYP_MSVS_VERSION: 2022
-          # If you have code signing certificates, you would add them here:
-          # CSC_LINK: ${{ secrets.CSC_LINK }}
-          # CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          npm_config_msvs_version: 2022
 
       - name: Upload Artifacts
         if: startsWith(github.ref, 'refs/tags/') == false
