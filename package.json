@@ -13,6 +13,26 @@
   },
   "author": "BizControl",
   "license": "MIT",
+  "build": {
+    "appId": "com.bizcontrol.360",
+    "productName": "BizController 360",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "icon": "icon/iconiconbiz.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "icon/iconiconbiz.ico",
+      "uninstallerIcon": "icon/iconiconbiz.ico",
+      "shortcutName": "BizController 360"
+    }
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.1",
     "axios": "^1.16.1",

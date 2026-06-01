@@ -211,7 +211,7 @@ const createMenu = () => {
                 type: "info",
                 title: "Sobre BizController 360",
                 message: "Sistema de Gestão de Stock & Vendas v1.0.0",
-                detail: "© 2026 BizControl. Todos os direitos reservados.",
+                detail: "© 2026 Elvatech. Todos os direitos reservados.",
               });
             }
           },

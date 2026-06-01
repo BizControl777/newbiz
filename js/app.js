@@ -50,10 +50,10 @@ const MENUS = {
     { id: "definicoes", icon: "<i class='fa-solid fa-gear'></i>", label: t("definicoes") }
   ],
   super: [
-    { id: "empresas", icon: "<i class='fa-solid fa-building'></i>", label: t("empresas") },
-    { id: "criar-empresa", icon: "<i class='fa-solid fa-plus'></i>", label: "Criar Empresa" },
-    { id: "subscricoes", icon: "<i class='fa-solid fa-credit-card'></i>", label: t("subscricoes") },
-    { id: "super-stats", icon: "<i class='fa-solid fa-chart-simple'></i>", label: t("super_stats") }
+    // { id: "empresas", icon: "<i class='fa-solid fa-building'></i>", label: t("empresas") },
+    // { id: "criar-empresa", icon: "<i class='fa-solid fa-plus'></i>", label: "Criar Empresa" },
+    // { id: "subscricoes", icon: "<i class='fa-solid fa-credit-card'></i>", label: t("subscricoes") },
+    // { id: "super-stats", icon: "<i class='fa-solid fa-chart-simple'></i>", label: t("super_stats") }
   ]
 };
 

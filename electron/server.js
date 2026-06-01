@@ -40,12 +40,14 @@ const getDeviceId = () => {
 // Helper para contar funcionários locais
 const getLocalEmployeesCount = () => {
   return new Promise((resolve) => {
-    db.get("SELECT COUNT(*) as total FROM usuarios", [], (err, row) => {
+    db.get("SELECT COUNT(*) as total FROM usuarios WHERE ativo = 1", [], (err, row) => {
       if (err) {
-        console.error("[COUNT] Erro ao contar funcionários:", err.message);
+        console.error("[COUNT ERROR] Falha ao contar funcionários na tabela 'usuarios':", err.message);
         resolve(0);
       } else {
-        resolve(row.total || 0);
+        const count = row ? (row.total || 0) : 0;
+        console.log(`[COUNT SUCCESS] Total de funcionários ativos encontrados localmente: ${count}`);
+        resolve(count);
       }
     });
   });
@@ -637,8 +639,9 @@ app.post("/api/validate", async (req, res) => {
       nextValidation.setDate(nextValidation.getDate() + 10);
 
       const totalEmployees = await getLocalEmployeesCount();
+      console.log(`[VALIDATE] Sincronizando licença ${license_key}. Funcionários: ${totalEmployees}`);
 
-      await supabase
+      const { data: updateData, error: updateError } = await supabase
         .from("licenses")
         .update({
           last_validation_at: new Date().toISOString(),
@@ -648,7 +651,14 @@ app.post("/api/validate", async (req, res) => {
           device_id: device_id,
           total_employees: totalEmployees
         })
-        .eq("license_key", license_key);
+        .eq("license_key", license_key)
+        .select();
+
+      if (updateError) {
+        console.error(`[VALIDATE ERROR] Falha ao atualizar Supabase:`, updateError.message);
+      } else {
+        console.log(`[VALIDATE SUCCESS] Supabase atualizado com sucesso. Dados retornados:`, updateData);
+      }
 
       return res.json({
         status: license.status,
@@ -1708,25 +1718,9 @@ app.get("/api/dashboard/stats", verifyToken, (req, res) => {
   );
 });
 
-// ===== ROTAS SUPER ADMIN (STATS) =====
+// ===== ROTAS SUPER ADMIN (STATS) - DESACTIVADO LOCALMENTE =====
 app.get("/api/super/stats", verifyToken, (req, res) => {
-  if (req.role !== "super") return res.status(403).json({ message: "Acesso negado" });
-
-  db.get(
-    `
-    SELECT 
-      (SELECT COUNT(*) FROM empresas) as totalEmpresas,
-      (SELECT COUNT(*) FROM empresas WHERE ativo = 1) as activeEmpresas,
-      (SELECT COUNT(*) FROM usuarios) as totalUsuarios,
-      (SELECT COUNT(*) FROM produtos) as totalProdutos,
-      (SELECT SUM(total) FROM vendas) as totalVendasGlobal
-  `,
-    [],
-    (err, row) => {
-      if (err) return res.status(500).json({ message: "Erro ao buscar estatísticas globais" });
-      res.json(row);
-    }
-  );
+  return res.status(403).json({ message: "Acesso negado. Gerencie via Painel Web." });
 });
 
 // Health check
