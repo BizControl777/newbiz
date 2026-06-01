@@ -4,7 +4,7 @@ import bodyParser from "body-parser";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
-import sqlite3 from "sqlite3";
+import Database from "better-sqlite3";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import fs from "fs";
@@ -40,16 +40,15 @@ const getDeviceId = () => {
 // Helper para contar funcionários locais
 const getLocalEmployeesCount = () => {
   return new Promise((resolve) => {
-    db.get("SELECT COUNT(*) as total FROM usuarios WHERE ativo = 1", [], (err, row) => {
-      if (err) {
-        console.error("[COUNT ERROR] Falha ao contar funcionários na tabela 'usuarios':", err.message);
-        resolve(0);
-      } else {
-        const count = row ? (row.total || 0) : 0;
-        console.log(`[COUNT SUCCESS] Total de funcionários ativos encontrados localmente: ${count}`);
-        resolve(count);
-      }
-    });
+    try {
+      const row = db.prepare("SELECT COUNT(*) as total FROM usuarios WHERE ativo = 1").get();
+      const count = row ? (row.total || 0) : 0;
+      console.log(`[COUNT SUCCESS] Total de funcionários ativos encontrados localmente: ${count}`);
+      resolve(count);
+    } catch (err) {
+      console.error("[COUNT ERROR] Falha ao contar funcionários na tabela 'usuarios':", err.message);
+      resolve(0);
+    }
   });
 };
 
@@ -60,8 +59,9 @@ const checkLocalLicense = (req, res, next) => {
     return next();
   }
 
-  db.get("SELECT * FROM local_license LIMIT 1", [], (err, license) => {
-    if (err || !license) {
+  try {
+    const license = db.prepare("SELECT * FROM local_license LIMIT 1").get();
+    if (!license) {
       return res.status(403).json({ message: "Licença não encontrada. Ative o sistema.", code: "NO_LICENSE" });
     }
 
@@ -87,11 +87,13 @@ const checkLocalLicense = (req, res, next) => {
           code: "VALIDATION_REQUIRED" 
         });
       }
-      // Se for GET, permitimos, mas podemos adicionar um header ou info de que está em modo limitado
     }
 
     next();
-  });
+  } catch (err) {
+    console.error("[LICENSE ERROR] Falha ao verificar licença:", err.message);
+    return res.status(500).json({ message: "Erro interno ao verificar licença" });
+  }
 };
 
 // Middleware
@@ -126,186 +128,152 @@ try {
 }
 
 // Inicializar banco de dados
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) {
-    console.error("Erro ao conectar ao banco de dados:", err);
-  } else {
-    console.log("✓ Banco de dados conectado ->", dbPath);
-    initDatabase();
-  }
-});
+const db = new Database(dbPath);
+console.log("✓ Banco de dados conectado ->", dbPath);
+initDatabase();
 
 // Inicializar tabelas
 function initDatabase() {
-  db.serialize(() => {
-    db.run(`
-      CREATE TABLE IF NOT EXISTS local_license (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        license_key TEXT,
-        device_id TEXT,
-        company_name TEXT,
-        status TEXT,
-        expires_at DATETIME,
-        last_validation_at DATETIME,
-        next_validation_at DATETIME
-      )
-    `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS local_license (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      license_key TEXT,
+      device_id TEXT,
+      company_name TEXT,
+      status TEXT,
+      expires_at DATETIME,
+      last_validation_at DATETIME,
+      next_validation_at DATETIME
+    );
 
-    // Tabela de usuários
-    db.run(`
-      CREATE TABLE IF NOT EXISTS usuarios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nome TEXT NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        senha TEXT NOT NULL,
-        role TEXT DEFAULT 'vendedor',
-        empresa_id INTEGER,
-        ativo INTEGER DEFAULT 1,
-        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+    CREATE TABLE IF NOT EXISTS usuarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nome TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      senha TEXT NOT NULL,
+      role TEXT DEFAULT 'vendedor',
+      empresa_id INTEGER,
+      ativo INTEGER DEFAULT 1,
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
 
-    // Tabela de empresas
-    db.run(`
-      CREATE TABLE IF NOT EXISTS empresas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nome TEXT NOT NULL,
-        cnpj TEXT UNIQUE,
-        endereco TEXT,
-        telefone TEXT,
-        email TEXT,
-        ativo INTEGER DEFAULT 1,
-        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+    CREATE TABLE IF NOT EXISTS empresas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nome TEXT NOT NULL,
+      cnpj TEXT UNIQUE,
+      endereco TEXT,
+      telefone TEXT,
+      email TEXT,
+      ativo INTEGER DEFAULT 1,
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
 
-    // Tabela de categorias
-    db.run(`
-      CREATE TABLE IF NOT EXISTS categorias (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nome TEXT NOT NULL,
-        empresa_id INTEGER,
-        ativo INTEGER DEFAULT 1
-      )
-    `);
+    CREATE TABLE IF NOT EXISTS categorias (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nome TEXT NOT NULL,
+      empresa_id INTEGER,
+      ativo INTEGER DEFAULT 1
+    );
 
-    // Tabela de produtos
-    db.run(`
-      CREATE TABLE IF NOT EXISTS produtos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nome TEXT NOT NULL,
-        categoria_id INTEGER,
-        empresa_id INTEGER,
-        preco_venda REAL NOT NULL,
-        preco_custo REAL NOT NULL,
-        stock REAL DEFAULT 0,
-        stock_minimo REAL DEFAULT 10,
-        ativo INTEGER DEFAULT 1,
-        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(categoria_id) REFERENCES categorias(id),
-        FOREIGN KEY(empresa_id) REFERENCES empresas(id)
-      )
-    `);
+    CREATE TABLE IF NOT EXISTS produtos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nome TEXT NOT NULL,
+      categoria_id INTEGER,
+      empresa_id INTEGER,
+      preco_venda REAL NOT NULL,
+      preco_custo REAL NOT NULL,
+      stock REAL DEFAULT 0,
+      stock_minimo REAL DEFAULT 10,
+      ativo INTEGER DEFAULT 1,
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(categoria_id) REFERENCES categorias(id),
+      FOREIGN KEY(empresa_id) REFERENCES empresas(id)
+    );
 
-    // Tabela de vendas
-    db.run(`
-      CREATE TABLE IF NOT EXISTS vendas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        usuario_id INTEGER,
-        empresa_id INTEGER,
-        total REAL NOT NULL,
-        status TEXT DEFAULT 'concluida',
-        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(usuario_id) REFERENCES usuarios(id),
-        FOREIGN KEY(empresa_id) REFERENCES empresas(id)
-      )
-    `);
+    CREATE TABLE IF NOT EXISTS vendas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      usuario_id INTEGER,
+      empresa_id INTEGER,
+      total REAL NOT NULL,
+      status TEXT DEFAULT 'concluida',
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id),
+      FOREIGN KEY(empresa_id) REFERENCES empresas(id)
+    );
 
-    // Tabela de itens de venda
-    db.run(`
-      CREATE TABLE IF NOT EXISTS itens_venda (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        venda_id INTEGER,
-        produto_id INTEGER,
-        quantidade REAL NOT NULL,
-        preco_unitario REAL NOT NULL,
-        total REAL NOT NULL,
-        FOREIGN KEY(venda_id) REFERENCES vendas(id),
-        FOREIGN KEY(produto_id) REFERENCES produtos(id)
-      )
-    `);
+    CREATE TABLE IF NOT EXISTS itens_venda (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      venda_id INTEGER,
+      produto_id INTEGER,
+      quantidade REAL NOT NULL,
+      preco_unitario REAL NOT NULL,
+      total REAL NOT NULL,
+      FOREIGN KEY(venda_id) REFERENCES vendas(id),
+      FOREIGN KEY(produto_id) REFERENCES produtos(id)
+    );
 
-    // Tabela de movimentações de stock
-    db.run(`
-      CREATE TABLE IF NOT EXISTS movimentacoes_stock (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        produto_id INTEGER,
-        empresa_id INTEGER,
-        tipo TEXT,
-        quantidade REAL,
-        usuario_id INTEGER,
-        descricao TEXT,
-        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(produto_id) REFERENCES produtos(id),
-        FOREIGN KEY(usuario_id) REFERENCES usuarios(id),
-        FOREIGN KEY(empresa_id) REFERENCES empresas(id)
-      )
-    `);
+    CREATE TABLE IF NOT EXISTS movimentacoes_stock (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      produto_id INTEGER,
+      empresa_id INTEGER,
+      tipo TEXT,
+      quantidade REAL,
+      usuario_id INTEGER,
+      descricao TEXT,
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(produto_id) REFERENCES produtos(id),
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id),
+      FOREIGN KEY(empresa_id) REFERENCES empresas(id)
+    );
 
-    // Tabela de reservas
-    db.run(`
-      CREATE TABLE IF NOT EXISTS reservas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        usuario_id INTEGER,
-        produto_id INTEGER,
-        empresa_id INTEGER,
-        quantidade REAL NOT NULL,
-        titular TEXT,
-        bi TEXT,
-        status TEXT DEFAULT 'Activa',
-        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
-        atualizado_em DATETIME,
-        FOREIGN KEY(usuario_id) REFERENCES usuarios(id),
-        FOREIGN KEY(produto_id) REFERENCES produtos(id),
-        FOREIGN KEY(empresa_id) REFERENCES empresas(id)
-      )
-    `);
+    CREATE TABLE IF NOT EXISTS reservas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      usuario_id INTEGER,
+      produto_id INTEGER,
+      empresa_id INTEGER,
+      quantidade REAL NOT NULL,
+      titular TEXT,
+      bi TEXT,
+      status TEXT DEFAULT 'Activa',
+      criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+      atualizado_em DATETIME,
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id),
+      FOREIGN KEY(produto_id) REFERENCES produtos(id),
+      FOREIGN KEY(empresa_id) REFERENCES empresas(id)
+    );
 
-    db.run(`
-      CREATE TABLE IF NOT EXISTS caixas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        empresa_id INTEGER,
-        usuario_abertura_id INTEGER,
-        usuario_fechamento_id INTEGER,
-        valor_inicial REAL DEFAULT 0,
-        valor_fechamento REAL DEFAULT 0,
-        valor_esperado REAL DEFAULT 0,
-        diferenca REAL DEFAULT 0,
-        status TEXT DEFAULT 'aberto',
-        aberto_em DATETIME DEFAULT CURRENT_TIMESTAMP,
-        fechado_em DATETIME,
-        observacoes TEXT,
-        FOREIGN KEY(empresa_id) REFERENCES empresas(id),
-        FOREIGN KEY(usuario_abertura_id) REFERENCES usuarios(id),
-        FOREIGN KEY(usuario_fechamento_id) REFERENCES usuarios(id)
-      )
-    `);
+    CREATE TABLE IF NOT EXISTS caixas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      empresa_id INTEGER,
+      usuario_abertura_id INTEGER,
+      usuario_fechamento_id INTEGER,
+      valor_inicial REAL DEFAULT 0,
+      valor_fechamento REAL DEFAULT 0,
+      valor_esperado REAL DEFAULT 0,
+      diferenca REAL DEFAULT 0,
+      status TEXT DEFAULT 'aberto',
+      aberto_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+      fechado_em DATETIME,
+      observacoes TEXT,
+      FOREIGN KEY(empresa_id) REFERENCES empresas(id),
+      FOREIGN KEY(usuario_abertura_id) REFERENCES usuarios(id),
+      FOREIGN KEY(usuario_fechamento_id) REFERENCES usuarios(id)
+    );
+  `);
 
-    migrateProdutosColumns();
-    migrateVendasColumns();
-    migrateEmpresasColumns();
-    migrateUsuariosColumns();
-    migrateReservasColumns();
-    migrateCaixasColumns();
-    createFinanceiroTable();
+  migrateProdutosColumns();
+  migrateVendasColumns();
+  migrateEmpresasColumns();
+  migrateUsuariosColumns();
+  migrateReservasColumns();
+  migrateCaixasColumns();
+  createFinanceiroTable();
 
-    // Inserir dados demo
-    db.all("SELECT COUNT(*) as count FROM usuarios", [], (err, rows) => {
-      if (rows && rows[0].count === 0) {
-        insertDemoData();
-      }
-    });
-  });
+  // Inserir dados demo
+  const row = db.prepare("SELECT COUNT(*) as count FROM usuarios").get();
+  if (row && row.count === 0) {
+    insertDemoData();
+  }
 }
 
 function migrateProdutosColumns() {
@@ -324,11 +292,13 @@ function migrateProdutosColumns() {
     ["data_validade", "DATE"],
   ];
   columns.forEach(([name, type]) => {
-    db.run(`ALTER TABLE produtos ADD COLUMN ${name} ${type}`, (err) => {
-      if (err && !String(err.message).includes("duplicate column")) {
-        // coluna já existe — ignorar
+    try {
+      db.exec(`ALTER TABLE produtos ADD COLUMN ${name} ${type}`);
+    } catch (err) {
+      if (!String(err.message).includes("duplicate column")) {
+        // console.warn(`Falha ao migrar produtos.${name}:`, err.message);
       }
-    });
+    }
   });
 }
 
@@ -343,11 +313,13 @@ function migrateVendasColumns() {
     ["caixa_id", "INTEGER"],
   ];
   columns.forEach(([name, type]) => {
-    db.run(`ALTER TABLE vendas ADD COLUMN ${name} ${type}`, (err) => {
-      if (err && !String(err.message).includes("duplicate column")) {
+    try {
+      db.exec(`ALTER TABLE vendas ADD COLUMN ${name} ${type}`);
+    } catch (err) {
+      if (!String(err.message).includes("duplicate column")) {
         console.warn(`Falha ao migrar vendas.${name}:`, err.message);
       }
-    });
+    }
   });
 }
 
@@ -366,16 +338,18 @@ function migrateCaixasColumns() {
     ["observacoes", "TEXT"],
   ];
   columns.forEach(([name, type]) => {
-    db.run(`ALTER TABLE caixas ADD COLUMN ${name} ${type}`, (err) => {
-      if (err && !String(err.message).includes("duplicate column")) {
+    try {
+      db.exec(`ALTER TABLE caixas ADD COLUMN ${name} ${type}`);
+    } catch (err) {
+      if (!String(err.message).includes("duplicate column")) {
         // ignorar
       }
-    });
+    }
   });
 }
 
 function createFinanceiroTable() {
-  db.run(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS transacoes_financeiras (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       empresa_id INTEGER,
@@ -402,11 +376,13 @@ function migrateEmpresasColumns() {
     ["empresario_nome", "TEXT"],
   ];
   columns.forEach(([name, type]) => {
-    db.run(`ALTER TABLE empresas ADD COLUMN ${name} ${type}`, (err) => {
-      if (err && !String(err.message).includes("duplicate column")) {
+    try {
+      db.exec(`ALTER TABLE empresas ADD COLUMN ${name} ${type}`);
+    } catch (err) {
+      if (!String(err.message).includes("duplicate column")) {
         // ignorar
       }
-    });
+    }
   });
 }
 
@@ -415,11 +391,13 @@ function migrateUsuariosColumns() {
     ["permissoes", "TEXT"], // JSON array
   ];
   columns.forEach(([name, type]) => {
-    db.run(`ALTER TABLE usuarios ADD COLUMN ${name} ${type}`, (err) => {
-      if (err && !String(err.message).includes("duplicate column")) {
+    try {
+      db.exec(`ALTER TABLE usuarios ADD COLUMN ${name} ${type}`);
+    } catch (err) {
+      if (!String(err.message).includes("duplicate column")) {
         // ignorar
       }
-    });
+    }
   });
 }
 
@@ -429,11 +407,13 @@ function migrateReservasColumns() {
     ["bi", "TEXT"],
   ];
   columns.forEach(([name, type]) => {
-    db.run(`ALTER TABLE reservas ADD COLUMN ${name} ${type}`, (err) => {
-      if (err && !String(err.message).includes("duplicate column")) {
+    try {
+      db.exec(`ALTER TABLE reservas ADD COLUMN ${name} ${type}`);
+    } catch (err) {
+      if (!String(err.message).includes("duplicate column")) {
         // ignorar
       }
-    });
+    }
   });
 }
 
@@ -443,55 +423,57 @@ function resolveCategoriaId(categoria_id, empresaId, callback) {
     return callback(null, Number(categoria_id));
   }
   const nome = String(categoria_id).trim();
-  db.get("SELECT id FROM categorias WHERE nome = ? AND empresa_id = ?", [nome, empresaId], (err, row) => {
+  try {
+    const row = db.prepare("SELECT id FROM categorias WHERE nome = ? AND empresa_id = ?").get(nome, empresaId);
     if (row) return callback(null, row.id);
-    db.run("INSERT INTO categorias (nome, empresa_id) VALUES (?, ?)", [nome, empresaId], function (insErr) {
-      if (insErr) return callback(insErr);
-      callback(null, this.lastID);
-    });
-  });
+    const info = db.prepare("INSERT INTO categorias (nome, empresa_id) VALUES (?, ?)").run(nome, empresaId);
+    callback(null, info.lastInsertRowid);
+  } catch (err) {
+    callback(err);
+  }
 }
 
 // Inserir dados de demonstração
 function insertDemoData() {
   const hashedPassword = bcrypt.hashSync("demo123", 10);
 
-  db.run("INSERT INTO empresas (nome, cnpj, endereco, telefone, email) VALUES (?, ?, ?, ?, ?)", [
-    "BizControl Demo",
-    "12345678000100",
-    "Maputo, Moçambique",
-    "+258123456789",
-    "contact@bizcontrol.local",
-  ]);
+  try {
+    db.prepare("INSERT INTO empresas (nome, cnpj, endereco, telefone, email) VALUES (?, ?, ?, ?, ?)").run(
+      "BizControl Demo",
+      "12345678000100",
+      "Maputo, Moçambique",
+      "+258123456789",
+      "contact@bizcontrol.local"
+    );
 
-  db.all("SELECT id FROM empresas LIMIT 1", [], (err, rows) => {
-    if (rows && rows[0]) {
-      const empresaId = rows[0].id;
+    const row = db.prepare("SELECT id FROM empresas LIMIT 1").get();
+    if (row) {
+      const empresaId = row.id;
 
-      db.run(
-        "INSERT INTO usuarios (nome, email, senha, role, empresa_id) VALUES (?, ?, ?, ?, ?)",
-        ["Admin", "admin@bizcontrol.local", hashedPassword, "super", empresaId]
-      );
+      db.prepare(
+        "INSERT INTO usuarios (nome, email, senha, role, empresa_id) VALUES (?, ?, ?, ?, ?)"
+      ).run("Admin", "admin@bizcontrol.local", hashedPassword, "super", empresaId);
 
-      db.run(
-        "INSERT INTO usuarios (nome, email, senha, role, empresa_id) VALUES (?, ?, ?, ?, ?)",
-        ["Gestor", "gestor@bizcontrol.local", hashedPassword, "gestor", empresaId]
-      );
+      db.prepare(
+        "INSERT INTO usuarios (nome, email, senha, role, empresa_id) VALUES (?, ?, ?, ?, ?)"
+      ).run("Gestor", "gestor@bizcontrol.local", hashedPassword, "gestor", empresaId);
 
-      db.run(
-        "INSERT INTO usuarios (nome, email, senha, role, empresa_id) VALUES (?, ?, ?, ?, ?)",
-        ["Vendedor", "vendedor@bizcontrol.local", hashedPassword, "vendedor", empresaId]
-      );
+      db.prepare(
+        "INSERT INTO usuarios (nome, email, senha, role, empresa_id) VALUES (?, ?, ?, ?, ?)"
+      ).run("Vendedor", "vendedor@bizcontrol.local", hashedPassword, "vendedor", empresaId);
 
       // Categorias
       const categorias = ["Bebidas", "Alimentos", "Higiene", "Electrónica"];
+      const insertCat = db.prepare("INSERT INTO categorias (nome, empresa_id) VALUES (?, ?)");
       categorias.forEach((cat) => {
-        db.run("INSERT INTO categorias (nome, empresa_id) VALUES (?, ?)", [cat, empresaId]);
+        insertCat.run(cat, empresaId);
       });
 
       console.log("✓ Dados de demonstração inseridos");
     }
-  });
+  } catch (err) {
+    console.error("Erro ao inserir dados demo:", err.message);
+  }
 }
 
 // Middleware de autenticação
@@ -589,12 +571,11 @@ app.post("/api/activate", async (req, res) => {
       const { status, expires_at, next_validation_at } = response.data;
       
       // Guardar localmente para funcionamento offline
-      db.run(`
+      db.prepare(`
         INSERT OR REPLACE INTO local_license 
         (id, license_key, device_id, company_name, status, expires_at, last_validation_at, next_validation_at)
-        VALUES (1, ?, ?, ?, ?, ?, ?, ?)`,
-        [license_key, device_id, company_name, status, expires_at, new Date().toISOString(), next_validation_at]
-      );
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(license_key, device_id, company_name, status, expires_at, new Date().toISOString(), next_validation_at);
 
       return res.json(response.data);
     }
@@ -675,17 +656,14 @@ app.post("/api/validate", async (req, res) => {
         statusData = response.data;
         
         // Atualizar cache local
-        db.run(`
+        db.prepare(`
           UPDATE local_license SET 
           status = ?, expires_at = ?, last_validation_at = ?, next_validation_at = ?
-          WHERE license_key = ?`,
-          [statusData.status, statusData.expires_at, new Date().toISOString(), statusData.next_validation_at, license_key]
-        );
+          WHERE license_key = ?`
+        ).run(statusData.status, statusData.expires_at, new Date().toISOString(), statusData.next_validation_at, license_key);
       } catch (err) {
         // Fallback local se estiver offline (Permitido por até 10 dias pelo middleware checkLocalLicense)
-        const license = await new Promise((resolve) => {
-          db.get("SELECT * FROM local_license WHERE license_key = ?", [license_key], (e, row) => resolve(row));
-        });
+        const license = db.prepare("SELECT * FROM local_license WHERE license_key = ?").get(license_key);
 
         if (!license) return res.status(404).json({ message: "Licença não encontrada localmente. Conecte-se à internet." });
         
@@ -742,15 +720,15 @@ app.post("/api/block", async (req, res) => {
 
 // GET STATUS LOCAL
 app.get("/api/license/status", (req, res) => {
-  db.get("SELECT * FROM local_license LIMIT 1", [], (err, row) => {
-    if (err) {
-      console.error("[LICENSE] Erro ao buscar status local:", err);
-      return res.status(500).json({ message: "Erro ao buscar licença" });
-    }
+  try {
+    const row = db.prepare("SELECT * FROM local_license LIMIT 1").get();
     const status = row || { status: "none" };
     console.log("[LICENSE] Status local solicitado:", status.status, row ? `(Key: ${row.license_key})` : "(Sem licença)");
     res.json(status);
-  });
+  } catch (err) {
+    console.error("[LICENSE] Erro ao buscar status local:", err);
+    return res.status(500).json({ message: "Erro ao buscar licença" });
+  }
 });
 
 // LISTAR LICENÇAS (SUPER ADMIN)
@@ -828,17 +806,16 @@ app.post("/api/auth/login", async (req, res) => {
         
         if (passwordValid) {
           // SINCRONIZAÇÃO: Garantir que a empresa existe localmente
-          const empresaId = await new Promise((resolve) => {
-            db.get("SELECT id FROM empresas WHERE nome = ?", [license.company_name], (err, row) => {
-              if (row) resolve(row.id);
-              else {
-                db.run("INSERT INTO empresas (nome, email, telefone, ativo) VALUES (?, ?, ?, ?)",
-                  [license.company_name, license.login_email, license.phone, 1],
-                  function() { resolve(this.lastID); }
-                );
-              }
-            });
-          });
+          let empresaId;
+          const empresaRow = db.prepare("SELECT id FROM empresas WHERE nome = ?").get(license.company_name);
+          if (empresaRow) {
+            empresaId = empresaRow.id;
+          } else {
+            const info = db.prepare("INSERT INTO empresas (nome, email, telefone, ativo) VALUES (?, ?, ?, ?)").run(
+              license.company_name, license.login_email, license.phone, 1
+            );
+            empresaId = info.lastInsertRowid;
+          }
 
           // SINCRONIZAÇÃO: Atualizar cache do utilizador
           const currentHash = license.login_password; // Pode ter sido atualizado na auto-migração
@@ -862,21 +839,18 @@ app.post("/api/auth/login", async (req, res) => {
             console.log(`[HEARTBEAT] Atualizado via Login: ${license.license_key} (Funcionários: ${totalEmployees})`);
           }
           
-          await new Promise((resolve) => {
-            db.run(`
+          try {
+            db.prepare(`
               INSERT INTO usuarios (nome, email, senha, role, empresa_id, ativo, permissoes)
               VALUES (?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(email) DO UPDATE SET
               nome=excluded.nome, senha=excluded.senha, role=excluded.role, 
-              empresa_id=excluded.empresa_id, ativo=excluded.ativo, permissoes=excluded.permissoes`,
-              [license.owner_name || license.company_name, license.login_email, currentHash, "gestor", empresaId, 1, perms],
-              (err) => {
-                if (err) console.error("[SYNC] Erro ao atualizar cache local:", err.message);
-                else console.log("[SYNC] Dados locais atualizados com sucesso");
-                resolve();
-              }
-            );
-          });
+              empresa_id=excluded.empresa_id, ativo=excluded.ativo, permissoes=excluded.permissoes`
+            ).run(license.owner_name || license.company_name, license.login_email, currentHash, "gestor", empresaId, 1, perms);
+            console.log("[SYNC] Dados locais atualizados com sucesso");
+          } catch (syncErr) {
+            console.error("[SYNC] Erro ao atualizar cache local:", syncErr.message);
+          }
 
           // Preparar objeto do utilizador para a resposta
           user = {
@@ -902,25 +876,22 @@ app.post("/api/auth/login", async (req, res) => {
     if (!user) {
       console.log("OFFLINE LOGIN");
       
-      return db.get("SELECT * FROM usuarios WHERE email = ? AND ativo = 1", [email], (err, localUser) => {
-        if (err || !localUser) {
-          console.log("USER NOT FOUND");
-          return res.status(401).json({ message: "Sem dados locais disponíveis para este email. Conecte-se à internet para o primeiro acesso." });
-        }
+      const localUser = db.prepare("SELECT * FROM usuarios WHERE email = ? AND ativo = 1").get(email);
+      if (!localUser) {
+        console.log("USER NOT FOUND");
+        return res.status(401).json({ message: "Sem dados locais disponíveis para este email. Conecte-se à internet para o primeiro acesso." });
+      }
 
-        console.log("USER FOUND IN LOCAL CACHE");
-        
-        const passwordValid = bcrypt.compareSync(senha, localUser.senha);
-        if (!passwordValid) {
-          return res.status(401).json({ message: "Senha incorreta (Modo Offline)" });
-        }
+      console.log("USER FOUND IN LOCAL CACHE");
+      
+      const passwordValid = bcrypt.compareSync(senha, localUser.senha);
+      if (!passwordValid) {
+        return res.status(401).json({ message: "Senha incorreta (Modo Offline)" });
+      }
 
-        user = localUser;
-        return finalizeLogin(user, res);
-      });
+      user = localUser;
     }
 
-    // Se logou online com sucesso
     if (user) {
       return finalizeLogin(user, res);
     }
@@ -953,10 +924,12 @@ function finalizeLogin(user, res) {
 
 // ===== ROTAS DE CATEGORIAS =====
 app.get("/api/categorias", verifyToken, (req, res) => {
-  db.all("SELECT id, nome FROM categorias WHERE empresa_id = ? AND ativo = 1 ORDER BY nome", [req.empresaId], (err, rows) => {
-    if (err) return res.status(500).json({ message: "Erro ao buscar categorias" });
+  try {
+    const rows = db.prepare("SELECT id, nome FROM categorias WHERE empresa_id = ? AND ativo = 1 ORDER BY nome").all(req.empresaId);
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar categorias" });
+  }
 });
 
 app.post("/api/categorias", verifyToken, (req, res) => {
@@ -964,13 +937,15 @@ app.post("/api/categorias", verifyToken, (req, res) => {
   if (!nome || !String(nome).trim()) {
     return res.status(400).json({ message: "Nome da categoria é obrigatório" });
   }
-  db.get("SELECT id FROM categorias WHERE nome = ? AND empresa_id = ?", [nome.trim(), req.empresaId], (err, row) => {
+  try {
+    const row = db.prepare("SELECT id FROM categorias WHERE nome = ? AND empresa_id = ?").get(nome.trim(), req.empresaId);
     if (row) return res.json({ id: row.id, message: "Categoria já existe" });
-    db.run("INSERT INTO categorias (nome, empresa_id) VALUES (?, ?)", [nome.trim(), req.empresaId], function (insErr) {
-      if (insErr) return res.status(500).json({ message: "Erro ao criar categoria" });
-      res.json({ id: this.lastID, message: "Categoria criada com sucesso" });
-    });
-  });
+    
+    const info = db.prepare("INSERT INTO categorias (nome, empresa_id) VALUES (?, ?)").run(nome.trim(), req.empresaId);
+    res.json({ id: info.lastInsertRowid, message: "Categoria criada com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao criar categoria" });
+  }
 });
 
 // ===== ROTAS DE PRODUTOS =====
@@ -983,10 +958,12 @@ const PRODUTOS_SELECT = `
 `;
 
 app.get("/api/produtos", verifyToken, (req, res) => {
-  db.all(PRODUTOS_SELECT, [req.empresaId], (err, rows) => {
-    if (err) return res.status(500).json({ message: "Erro ao buscar produtos" });
+  try {
+    const rows = db.prepare(PRODUTOS_SELECT).all(req.empresaId);
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar produtos" });
+  }
 });
 
 app.post("/api/produtos", verifyToken, (req, res) => {
@@ -1028,12 +1005,13 @@ app.post("/api/produtos", verifyToken, (req, res) => {
     const precoCx = Number(preco_venda_caixa) || venda * qtdCx;
     const compraCx = Number(preco_compra_caixa) || custo * qtdCx;
 
-    db.run(
-      `INSERT INTO produtos (
-        nome, tipo_produto, categoria_id, empresa_id, preco_venda, preco_custo, stock, stock_minimo,
-        unidade_medida, qtd_por_caixa, preco_compra_caixa, preco_venda_caixa, tamanho, marca, descricao, codigo_barras
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+    try {
+      const info = db.prepare(
+        `INSERT INTO produtos (
+          nome, tipo_produto, categoria_id, empresa_id, preco_venda, preco_custo, stock, stock_minimo,
+          unidade_medida, qtd_por_caixa, preco_compra_caixa, preco_venda_caixa, tamanho, marca, descricao, codigo_barras
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
         nome.trim(),
         tipo_produto || "Unidade",
         catId,
@@ -1050,12 +1028,11 @@ app.post("/api/produtos", verifyToken, (req, res) => {
         marca || null,
         descricao || null,
         codigo_barras || null,
-      ],
-      function (err) {
-        if (err) return res.status(500).json({ message: "Erro ao criar produto: " + err.message });
-        res.json({ id: this.lastID, message: "Produto criado com sucesso" });
-      }
-    );
+      );
+      res.json({ id: info.lastInsertRowid, message: "Produto criado com sucesso" });
+    } catch (err) {
+      res.status(500).json({ message: "Erro ao criar produto: " + err.message });
+    }
   });
 });
 
@@ -1063,8 +1040,9 @@ app.put("/api/produtos/:id", verifyToken, (req, res) => {
   const { id } = req.params;
   const body = req.body;
 
-  db.get("SELECT * FROM produtos WHERE id = ? AND empresa_id = ?", [id, req.empresaId], (err, produto) => {
-    if (err || !produto) return res.status(404).json({ message: "Produto não encontrado" });
+  try {
+    const produto = db.prepare("SELECT * FROM produtos WHERE id = ? AND empresa_id = ?").get(id, req.empresaId);
+    if (!produto) return res.status(404).json({ message: "Produto não encontrado" });
 
     const applyUpdate = (catId) => {
       const nome = body.nome != null ? body.nome : produto.nome;
@@ -1090,36 +1068,32 @@ app.put("/api/produtos/:id", verifyToken, (req, res) => {
         return res.status(400).json({ message: "Margem negativa bloqueada: preço de venda abaixo do custo" });
       }
 
-      db.run(
+      db.prepare(
         `UPDATE produtos SET
           nome = ?, tipo_produto = ?, categoria_id = ?, preco_venda = ?, preco_custo = ?, stock = ?, stock_minimo = ?,
           unidade_medida = ?, qtd_por_caixa = ?, preco_compra_caixa = ?, preco_venda_caixa = ?,
           tamanho = ?, marca = ?, descricao = ?, codigo_barras = ?
-        WHERE id = ? AND empresa_id = ?`,
-        [
-          nome,
-          tipo_produto,
-          categoria_id,
-          preco_venda,
-          preco_custo,
-          stock,
-          stock_minimo,
-          unidade_medida,
-          qtd_por_caixa,
-          preco_compra_caixa,
-          preco_venda_caixa,
-          tamanho,
-          marca,
-          descricao,
-          codigo_barras,
-          id,
-          req.empresaId,
-        ],
-        function (updErr) {
-          if (updErr) return res.status(500).json({ message: "Erro ao atualizar produto" });
-          res.json({ message: "Produto atualizado com sucesso" });
-        }
+        WHERE id = ? AND empresa_id = ?`
+      ).run(
+        nome,
+        tipo_produto,
+        categoria_id,
+        preco_venda,
+        preco_custo,
+        stock,
+        stock_minimo,
+        unidade_medida,
+        qtd_por_caixa,
+        preco_compra_caixa,
+        preco_venda_caixa,
+        tamanho,
+        marca,
+        descricao,
+        codigo_barras,
+        id,
+        req.empresaId,
       );
+      res.json({ message: "Produto atualizado com sucesso" });
     };
 
     if (body.categoria_id != null) {
@@ -1130,20 +1104,20 @@ app.put("/api/produtos/:id", verifyToken, (req, res) => {
     } else {
       applyUpdate(null);
     }
-  });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao atualizar produto" });
+  }
 });
 
 app.delete("/api/produtos/:id", verifyToken, (req, res) => {
   const { id } = req.params;
-  db.run(
-    "UPDATE produtos SET ativo = 0 WHERE id = ? AND empresa_id = ?",
-    [id, req.empresaId],
-    function (err) {
-      if (err) return res.status(500).json({ message: "Erro ao remover produto" });
-      if (this.changes === 0) return res.status(404).json({ message: "Produto não encontrado" });
-      res.json({ message: "Produto removido com sucesso" });
-    }
-  );
+  try {
+    const info = db.prepare("UPDATE produtos SET ativo = 0 WHERE id = ? AND empresa_id = ?").run(id, req.empresaId);
+    if (info.changes === 0) return res.status(404).json({ message: "Produto não encontrado" });
+    res.json({ message: "Produto removido com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao remover produto" });
+  }
 });
 
 // ===== MOVIMENTAÇÕES DE STOCK =====
@@ -1157,8 +1131,9 @@ app.post("/api/movimentacoes", verifyToken, (req, res) => {
   const tipoNorm = String(tipo || "entrada").toLowerCase();
   const desc = descricao || observacao || `Movimento: ${tipoNorm}`;
 
-  db.get("SELECT stock FROM produtos WHERE id = ? AND empresa_id = ? AND ativo = 1", [produto_id, req.empresaId], (err, produto) => {
-    if (err || !produto) return res.status(404).json({ message: "Produto não encontrado" });
+  try {
+    const produto = db.prepare("SELECT stock FROM produtos WHERE id = ? AND empresa_id = ? AND ativo = 1").get(produto_id, req.empresaId);
+    if (!produto) return res.status(404).json({ message: "Produto não encontrado" });
 
     let delta = qty;
     if (tipoNorm === "saida" || tipoNorm === "venda") delta = -qty;
@@ -1169,83 +1144,75 @@ app.post("/api/movimentacoes", verifyToken, (req, res) => {
       return res.status(400).json({ message: "Stock insuficiente para esta operação" });
     }
 
-    db.run(
-      "INSERT INTO movimentacoes_stock (produto_id, empresa_id, tipo, quantidade, usuario_id, descricao) VALUES (?, ?, ?, ?, ?, ?)",
-      [produto_id, req.empresaId, tipoNorm, qty, req.userId, desc],
-      function (movErr) {
-        if (movErr) return res.status(500).json({ message: "Erro ao registar movimento" });
-        const movId = this.lastID;
-        db.run("UPDATE produtos SET stock = ? WHERE id = ?", [novoStock, produto_id], (updErr) => {
-          if (updErr) return res.status(500).json({ message: "Erro ao atualizar stock" });
-          res.json({ id: movId, stock: novoStock, message: "Movimento registado com sucesso" });
-        });
-      }
-    );
-  });
+    const info = db.prepare(
+      "INSERT INTO movimentacoes_stock (produto_id, empresa_id, tipo, quantidade, usuario_id, descricao) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(produto_id, req.empresaId, tipoNorm, qty, req.userId, desc);
+    
+    db.prepare("UPDATE produtos SET stock = ? WHERE id = ?").run(novoStock, produto_id);
+    res.json({ id: info.lastInsertRowid, stock: novoStock, message: "Movimento registado com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao registar movimento" });
+  }
 });
 
 app.get("/api/movimentacoes", verifyToken, (req, res) => {
-  db.all(
-    `SELECT m.*, p.nome AS produto_nome, p.preco_custo AS produto_preco_custo,
-            u.nome AS usuario_nome
-     FROM movimentacoes_stock m
-     LEFT JOIN produtos p ON m.produto_id = p.id
-     LEFT JOIN usuarios u ON m.usuario_id = u.id
-     WHERE m.empresa_id = ?
-     ORDER BY m.criado_em DESC
-     LIMIT 500`,
-    [req.empresaId],
-    (err, rows) => {
-      if (err) return res.status(500).json({ message: "Erro ao buscar movimentos" });
-      res.json(rows);
-    }
-  );
+  try {
+    const rows = db.prepare(
+      `SELECT m.*, p.nome AS produto_nome, p.preco_custo AS produto_preco_custo,
+              u.nome AS usuario_nome
+       FROM movimentacoes_stock m
+       LEFT JOIN produtos p ON m.produto_id = p.id
+       LEFT JOIN usuarios u ON m.usuario_id = u.id
+       WHERE m.empresa_id = ?
+       ORDER BY m.criado_em DESC
+       LIMIT 500`
+    ).all(req.empresaId);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar movimentos" });
+  }
 });
 
 // ===== ROTAS DE CAIXA =====
 app.get("/api/caixas/atual", verifyToken, (req, res) => {
-  db.get(
-    `SELECT c.*, u.nome as operador_abertura 
-     FROM caixas c 
-     LEFT JOIN usuarios u ON c.usuario_abertura_id = u.id
-     WHERE c.empresa_id = ? AND c.status = 'aberto' 
-     ORDER BY c.aberto_em DESC LIMIT 1`,
-    [req.empresaId],
-    (err, row) => {
-      if (err) return res.status(500).json({ message: "Erro ao buscar caixa" });
-      res.json(row || null);
-    }
-  );
+  try {
+    const row = db.prepare(
+      `SELECT c.*, u.nome as operador_abertura 
+       FROM caixas c 
+       LEFT JOIN usuarios u ON c.usuario_abertura_id = u.id
+       WHERE c.empresa_id = ? AND c.status = 'aberto' 
+       ORDER BY c.aberto_em DESC LIMIT 1`
+    ).get(req.empresaId);
+    res.json(row || null);
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar caixa" });
+  }
 });
 
 app.post("/api/caixas/abrir", verifyToken, (req, res) => {
   const { valor_inicial } = req.body;
   
-  // 1. Verificar se já existe um caixa ABERTO
-  db.get(
-    "SELECT id FROM caixas WHERE empresa_id = ? AND status = 'aberto'",
-    [req.empresaId],
-    (err, row) => {
-      if (row) return res.status(400).json({ message: "Já existe um caixa aberto para esta empresa. Feche-o antes de abrir um novo." });
+  try {
+    // 1. Verificar se já existe um caixa ABERTO
+    const row = db.prepare("SELECT id FROM caixas WHERE empresa_id = ? AND status = 'aberto'").get(req.empresaId);
+    if (row) return res.status(400).json({ message: "Já existe um caixa aberto para esta empresa. Feche-o antes de abrir um novo." });
 
-      db.run(
-        `INSERT INTO caixas (empresa_id, usuario_abertura_id, valor_inicial, status, aberto_em) 
-         VALUES (?, ?, ?, 'aberto', datetime('now', 'localtime'))`,
-        [req.empresaId, req.userId, Number(valor_inicial) || 0],
-        function (insErr) {
-          if (insErr) return res.status(500).json({ message: "Erro ao abrir caixa" });
-          res.json({ id: this.lastID, message: "Caixa aberto com sucesso" });
-        }
-      );
-    }
-  );
+    const info = db.prepare(
+      `INSERT INTO caixas (empresa_id, usuario_abertura_id, valor_inicial, status, aberto_em) 
+       VALUES (?, ?, ?, 'aberto', datetime('now', 'localtime'))`
+    ).run(req.empresaId, req.userId, Number(valor_inicial) || 0);
+    res.json({ id: info.lastInsertRowid, message: "Caixa aberto com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao abrir caixa" });
+  }
 });
 
 app.post("/api/caixas/reabrir", verifyToken, (req, res) => {
   const { id } = req.body;
   
-  db.get("SELECT * FROM caixas WHERE id = ? AND empresa_id = ?", [id, req.empresaId], (err, caixa) => {
-    if (err || !caixa) return res.status(404).json({ message: "Caixa não encontrado" });
+  try {
+    const caixa = db.prepare("SELECT * FROM caixas WHERE id = ? AND empresa_id = ?").get(id, req.empresaId);
+    if (!caixa) return res.status(404).json({ message: "Caixa não encontrado" });
     if (caixa.status === 'aberto') return res.status(400).json({ message: "O caixa já está aberto" });
 
     // Validar janela de 4 horas usando a hora do servidor para consistência
@@ -1258,65 +1225,55 @@ app.post("/api/caixas/reabrir", verifyToken, (req, res) => {
       return res.status(403).json({ message: "A janela de 4 horas para reabertura expirou." });
     }
 
-    db.run(
-      "UPDATE caixas SET status = 'aberto', fechado_em = NULL, usuario_fechamento_id = NULL WHERE id = ?",
-      [id],
-      (updErr) => {
-        if (updErr) return res.status(500).json({ message: "Erro ao reabrir caixa" });
-        res.json({ message: "Caixa reaberto com sucesso" });
-      }
-    );
-  });
+    db.prepare("UPDATE caixas SET status = 'aberto', fechado_em = NULL, usuario_fechamento_id = NULL WHERE id = ?").run(id);
+    res.json({ message: "Caixa reaberto com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao reabrir caixa" });
+  }
 });
 
 app.post("/api/caixas/fechar", verifyToken, (req, res) => {
   const { id, valor_fechamento, observacoes } = req.body;
 
-  db.get("SELECT * FROM caixas WHERE id = ? AND empresa_id = ?", [id, req.empresaId], (err, caixa) => {
-    if (err || !caixa) return res.status(404).json({ message: "Caixa não encontrado" });
+  try {
+    const caixa = db.prepare("SELECT * FROM caixas WHERE id = ? AND empresa_id = ?").get(id, req.empresaId);
+    if (!caixa) return res.status(404).json({ message: "Caixa não encontrado" });
     if (caixa.status === "fechado") return res.status(400).json({ message: "Este caixa já foi fechado" });
 
     // Calcular total de vendas vinculadas
-    db.get(
-      "SELECT SUM(total) as totalVendido FROM vendas WHERE caixa_id = ? AND empresa_id = ?",
-      [id, req.empresaId],
-      (vErr, result) => {
-        const totalVendido = Number(result?.totalVendido || 0);
-        const valorEsperado = Number(caixa.valor_inicial || 0) + totalVendido;
-        const valorContado = Number(valor_fechamento || 0);
-        const diferenca = valorContado - valorEsperado;
+    const result = db.prepare("SELECT SUM(total) as totalVendido FROM vendas WHERE caixa_id = ? AND empresa_id = ?").get(id, req.empresaId);
+    const totalVendido = Number(result?.totalVendido || 0);
+    const valorEsperado = Number(caixa.valor_inicial || 0) + totalVendido;
+    const valorContado = Number(valor_fechamento || 0);
+    const diferenca = valorContado - valorEsperado;
 
-        db.run(
-          `UPDATE caixas 
-           SET status = 'fechado', valor_fechamento = ?, valor_esperado = ?, diferenca = ?, 
-               usuario_fechamento_id = ?, fechado_em = datetime('now', 'localtime'), observacoes = ?
-           WHERE id = ?`,
-          [valorContado, valorEsperado, diferenca, req.userId, observacoes, id],
-          (updErr) => {
-            if (updErr) return res.status(500).json({ message: "Erro ao fechar caixa" });
-            res.json({ message: "Caixa fechado com sucesso", totalVendido, valorEsperado, diferenca });
-          }
-        );
-      }
-    );
-  });
+    db.prepare(
+      `UPDATE caixas 
+       SET status = 'fechado', valor_fechamento = ?, valor_esperado = ?, diferenca = ?, 
+           usuario_fechamento_id = ?, fechado_em = datetime('now', 'localtime'), observacoes = ?
+       WHERE id = ?`
+    ).run(valorContado, valorEsperado, diferenca, req.userId, observacoes, id);
+    res.json({ message: "Caixa fechado com sucesso", totalVendido, valorEsperado, diferenca });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao fechar caixa" });
+  }
 });
 
 app.get("/api/caixas/historico", verifyToken, (req, res) => {
-  db.all(
-    `SELECT c.*, u1.nome as operador_abertura, u2.nome as operador_fechamento
-     FROM caixas c
-     LEFT JOIN usuarios u1 ON c.usuario_abertura_id = u1.id
-     LEFT JOIN usuarios u2 ON c.usuario_fechamento_id = u2.id
-     WHERE c.empresa_id = ?
-     ORDER BY c.aberto_em DESC
-     LIMIT 100`,
-    [req.empresaId],
-    (err, rows) => {
-      if (err) return res.status(500).json({ message: "Erro ao buscar histórico de caixas" });
-      res.json(rows);
-    }
-  );
+  try {
+    const rows = db.prepare(
+      `SELECT c.*, u1.nome as operador_abertura, u2.nome as operador_fechamento
+       FROM caixas c
+       LEFT JOIN usuarios u1 ON c.usuario_abertura_id = u1.id
+       LEFT JOIN usuarios u2 ON c.usuario_fechamento_id = u2.id
+       WHERE c.empresa_id = ?
+       ORDER BY c.aberto_em DESC
+       LIMIT 100`
+    ).all(req.empresaId);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar histórico de caixas" });
+  }
 });
 
 // ===== ROTAS DE VENDAS =====
@@ -1341,58 +1298,38 @@ app.post("/api/vendas", verifyToken, (req, res) => {
     return res.status(400).json({ message: "Itens da venda são obrigatórios" });
   }
 
-  const validarStock = (cb) => {
-    let pending = itens.length;
-    let erro = null;
+  try {
+    // 1. Validar stock e calcular totais
     let custoTotal = 0;
     let totalCalculado = 0;
 
-    itens.forEach((item) => {
+    for (const item of itens) {
       const qty = Number(item.quantidade) || 0;
       const pid = item.produto_id;
       const lineTotal = Number(item.total) || 0;
-      if (qty <= 0) {
-        erro = "Quantidade inválida na venda";
-        pending--;
-        if (pending === 0) cb(erro, custoTotal, totalCalculado);
-        return;
-      }
-      if (lineTotal <= 0) {
-        erro = "Total inválido na venda";
-        pending--;
-        if (pending === 0) cb(erro, custoTotal, totalCalculado);
-        return;
-      }
-      db.get(
-        "SELECT id, nome, stock, preco_custo FROM produtos WHERE id = ? AND empresa_id = ? AND ativo = 1",
-        [pid, req.empresaId],
-        (err, row) => {
-          pending--;
-          if (err || !row) erro = erro || "Produto não encontrado";
-          else if (row.stock < qty) erro = `Stock insuficiente para ${row.nome}`;
-          else {
-            custoTotal += (Number(row.preco_custo) || 0) * qty;
-            totalCalculado += lineTotal;
-          }
-          if (pending === 0) cb(erro, custoTotal, totalCalculado);
-        }
-      );
-    });
-  };
+      
+      if (qty <= 0) return res.status(400).json({ message: "Quantidade inválida na venda" });
+      if (lineTotal <= 0) return res.status(400).json({ message: "Total inválido na venda" });
 
-  validarStock((stockErr, custoTotal, totalCalculado) => {
-    if (stockErr) return res.status(400).json({ message: stockErr });
+      const row = db.prepare("SELECT id, nome, stock, preco_custo FROM produtos WHERE id = ? AND empresa_id = ? AND ativo = 1").get(pid, req.empresaId);
+      if (!row) return res.status(400).json({ message: `Produto não encontrado: ${pid}` });
+      if (row.stock < qty) return res.status(400).json({ message: `Stock insuficiente para ${row.nome}` });
+
+      custoTotal += (Number(row.preco_custo) || 0) * qty;
+      totalCalculado += lineTotal;
+    }
+
     const vendaTotal = Number(totalCalculado || total || 0);
     if (vendaTotal <= 0) return res.status(400).json({ message: "Total da venda deve ser maior que zero" });
-    
-    // Removido bloqueio por margem negativa para permitir prejuízo real
-    
-    db.run(
-      `INSERT INTO vendas (
-        usuario_id, empresa_id, total, metodo_pagamento, status_pagamento,
-        cliente_nome, cliente_contacto, valor_recebido, troco, caixa_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+
+    // 2. Processar venda em transação
+    const executeVenda = db.transaction(() => {
+      const info = db.prepare(
+        `INSERT INTO vendas (
+          usuario_id, empresa_id, total, metodo_pagamento, status_pagamento,
+          cliente_nome, cliente_contacto, valor_recebido, troco, caixa_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
         req.userId,
         req.empresaId,
         vendaTotal,
@@ -1403,93 +1340,82 @@ app.post("/api/vendas", verifyToken, (req, res) => {
         Number(valor_recebido) || 0,
         Number(troco) || 0,
         caixa_id
-      ],
-      function (err) {
-        if (err) return res.status(500).json({ message: "Erro ao registar venda" });
+      );
 
-        const vendaId = this.lastID;
+      const vendaId = info.lastInsertRowid;
 
-        itens.forEach((item) => {
-          const qty = Number(item.quantidade) || 0;
-          db.run(
-            "INSERT INTO itens_venda (venda_id, produto_id, quantidade, preco_unitario, total) VALUES (?, ?, ?, ?, ?)",
-            [vendaId, item.produto_id, qty, item.preco_unitario, item.total]
-          );
-          db.run("UPDATE produtos SET stock = stock - ? WHERE id = ? AND empresa_id = ?", [
-            qty,
-            item.produto_id,
-            req.empresaId,
-          ]);
-          db.run(
-            "INSERT INTO movimentacoes_stock (produto_id, empresa_id, tipo, quantidade, usuario_id, descricao) VALUES (?, ?, ?, ?, ?, ?)",
-            [item.produto_id, req.empresaId, "venda", qty, req.userId, "Venda POS"]
-          );
-        });
+      const stmtItem = db.prepare("INSERT INTO itens_venda (venda_id, produto_id, quantidade, preco_unitario, total) VALUES (?, ?, ?, ?, ?)");
+      const stmtUpdateStock = db.prepare("UPDATE produtos SET stock = stock - ? WHERE id = ? AND empresa_id = ?");
+      const stmtMovStock = db.prepare("INSERT INTO movimentacoes_stock (produto_id, empresa_id, tipo, quantidade, usuario_id, descricao) VALUES (?, ?, ?, ?, ?, ?)");
 
-        res.json({ id: vendaId, message: "Venda registada com sucesso" });
-
-        // Registar automaticamente no financeiro
-        db.run(
-          `INSERT INTO transacoes_financeiras 
-           (empresa_id, usuario_id, tipo, categoria, valor, metodo_pagamento, entidade_nome, observacao) 
-           VALUES (?, ?, 'entrada', 'Venda', ?, ?, 'Cliente POS', ?)`,
-          [req.empresaId, req.userId, vendaTotal, String(metodo_pagamento || "dinheiro"), `Venda ID: ${vendaId}`]
-        );
+      for (const item of itens) {
+        const qty = Number(item.quantidade) || 0;
+        stmtItem.run(vendaId, item.produto_id, qty, item.preco_unitario, item.total);
+        stmtUpdateStock.run(qty, item.produto_id, req.empresaId);
+        stmtMovStock.run(item.produto_id, req.empresaId, "venda", qty, req.userId, "Venda POS");
       }
-    );
-  });
+
+      // Registar automaticamente no financeiro
+      db.prepare(
+        `INSERT INTO transacoes_financeiras 
+         (empresa_id, usuario_id, tipo, categoria, valor, metodo_pagamento, entidade_nome, observacao) 
+         VALUES (?, ?, 'entrada', 'Venda', ?, ?, 'Cliente POS', ?)`
+      ).run(req.empresaId, req.userId, vendaTotal, String(metodo_pagamento || "dinheiro"), `Venda ID: ${vendaId}`);
+
+      return vendaId;
+    });
+
+    const vendaId = executeVenda();
+    res.json({ id: vendaId, message: "Venda registada com sucesso" });
+
+  } catch (err) {
+    console.error("Erro ao processar venda:", err.message);
+    res.status(500).json({ message: "Erro ao registar venda: " + err.message });
+  }
 });
 
 app.get("/api/vendas", verifyToken, (req, res) => {
-  db.all(
-    `SELECT v.*, u.nome AS vendedor,
-            COALESCE(v.total - SUM(iv.quantidade * COALESCE(p.preco_custo, 0)), v.total) AS lucro
-     FROM vendas v
-     LEFT JOIN usuarios u ON v.usuario_id = u.id
-     LEFT JOIN itens_venda iv ON iv.venda_id = v.id
-     LEFT JOIN produtos p ON p.id = iv.produto_id
-     WHERE v.empresa_id = ?
-     GROUP BY v.id
-     ORDER BY v.criado_em DESC
-     LIMIT 300`,
-    [req.empresaId],
-    (err, vendas) => {
-      if (err) {
-        return res.status(500).json({ message: "Erro ao buscar vendas" });
-      }
-      
-      if (!vendas || vendas.length === 0) {
-        return res.json([]);
-      }
-
-      const vendaIds = vendas.map(v => v.id);
-      db.all(
-        `SELECT iv.*, p.nome as produto_nome 
-         FROM itens_venda iv
-         JOIN produtos p ON iv.produto_id = p.id
-         WHERE iv.venda_id IN (${vendaIds.join(',')})`,
-        [],
-        (errItems, items) => {
-          if (errItems) {
-            console.error("Erro ao buscar itens das vendas:", errItems);
-            return res.json(vendas);
-          }
-
-          const vendasComItens = vendas.map(v => ({
-            ...v,
-            produtos: items
-              .filter(i => i.venda_id === v.id)
-              .map(i => ({
-                nome: i.produto_nome,
-                qty: i.quantidade,
-                preco: i.preco_unitario
-              }))
-          }));
-          res.json(vendasComItens);
-        }
-      );
+  try {
+    const vendas = db.prepare(
+      `SELECT v.*, u.nome AS vendedor,
+              COALESCE(v.total - SUM(iv.quantidade * COALESCE(p.preco_custo, 0)), v.total) AS lucro
+       FROM vendas v
+       LEFT JOIN usuarios u ON v.usuario_id = u.id
+       LEFT JOIN itens_venda iv ON iv.venda_id = v.id
+       LEFT JOIN produtos p ON p.id = iv.produto_id
+       WHERE v.empresa_id = ?
+       GROUP BY v.id
+       ORDER BY v.criado_em DESC
+       LIMIT 300`
+    ).all(req.empresaId);
+    
+    if (!vendas || vendas.length === 0) {
+      return res.json([]);
     }
-  );
+
+    const vendaIds = vendas.map(v => v.id);
+    const items = db.prepare(
+      `SELECT iv.*, p.nome as produto_nome 
+       FROM itens_venda iv
+       JOIN produtos p ON iv.produto_id = p.id
+       WHERE iv.venda_id IN (${vendaIds.map(() => '?').join(',')})`
+    ).all(...vendaIds);
+
+    const vendasComItens = vendas.map(v => ({
+      ...v,
+      produtos: items
+        .filter(i => i.venda_id === v.id)
+        .map(i => ({
+          nome: i.produto_nome,
+          qty: i.quantidade,
+          preco: i.preco_unitario
+        }))
+    }));
+    res.json(vendasComItens);
+  } catch (err) {
+    console.error("Erro ao buscar vendas:", err.message);
+    res.status(500).json({ message: "Erro ao buscar vendas" });
+  }
 });
 
 app.put("/api/vendas/:id/pagamento", verifyToken, (req, res) => {
@@ -1501,24 +1427,24 @@ app.put("/api/vendas/:id/pagamento", verifyToken, (req, res) => {
     troco = 0,
   } = req.body;
 
-  db.run(
-    `UPDATE vendas
-     SET metodo_pagamento = ?, status_pagamento = ?, valor_recebido = ?, troco = ?
-     WHERE id = ? AND empresa_id = ?`,
-    [
+  try {
+    const info = db.prepare(
+      `UPDATE vendas
+       SET metodo_pagamento = ?, status_pagamento = ?, valor_recebido = ?, troco = ?
+       WHERE id = ? AND empresa_id = ?`
+    ).run(
       String(metodo_pagamento || "dinheiro"),
       String(status_pagamento || "pago"),
       Number(valor_recebido) || 0,
       Number(troco) || 0,
       id,
       req.empresaId,
-    ],
-    function (err) {
-      if (err) return res.status(500).json({ message: "Erro ao atualizar pagamento" });
-      if (this.changes === 0) return res.status(404).json({ message: "Venda não encontrada" });
-      res.json({ message: "Pagamento atualizado com sucesso" });
-    }
-  );
+    );
+    if (info.changes === 0) return res.status(404).json({ message: "Venda não encontrada" });
+    res.json({ message: "Pagamento atualizado com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao atualizar pagamento" });
+  }
 });
 
 // ===== ROTAS DE RESERVAS =====
@@ -1528,119 +1454,103 @@ app.post("/api/reservas", verifyToken, (req, res) => {
     return res.status(400).json({ message: "Dados incompletos para reserva" });
   }
 
-  db.serialize(() => {
-    db.get("SELECT stock, nome FROM produtos WHERE id = ? AND empresa_id = ?", [produto_id, req.empresaId], (err, row) => {
-      if (err || !row) return res.status(404).json({ message: "Produto não encontrado" });
-      if (row.stock < quantidade) return res.status(400).json({ message: `Stock insuficiente para ${row.nome}` });
+  try {
+    const row = db.prepare("SELECT stock, nome FROM produtos WHERE id = ? AND empresa_id = ?").get(produto_id, req.empresaId);
+    if (!row) return res.status(404).json({ message: "Produto não encontrado" });
+    if (row.stock < quantidade) return res.status(400).json({ message: `Stock insuficiente para ${row.nome}` });
 
-      db.run("BEGIN TRANSACTION");
+    const executeReserva = db.transaction(() => {
+      const info = db.prepare(
+        "INSERT INTO reservas (usuario_id, produto_id, empresa_id, quantidade, titular, bi, status) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(req.userId, produto_id, req.empresaId, quantidade, titular, bi, "Activa");
+      
+      const resId = info.lastInsertRowid;
 
-      db.run(
-        "INSERT INTO reservas (usuario_id, produto_id, empresa_id, quantidade, titular, bi, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [req.userId, produto_id, req.empresaId, quantidade, titular, bi, "Activa"],
-        function (insErr) {
-          if (insErr) {
-            db.run("ROLLBACK");
-            return res.status(500).json({ message: "Erro ao criar reserva" });
-          }
-          const resId = this.lastID;
+      db.prepare("UPDATE produtos SET stock = stock - ? WHERE id = ?").run(quantidade, produto_id);
+      
+      db.prepare(
+        "INSERT INTO movimentacoes_stock (produto_id, empresa_id, tipo, quantidade, usuario_id, descricao) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(produto_id, req.empresaId, "saida", quantidade, req.userId, `Reserva criada: ${titular}`);
 
-          db.run("UPDATE produtos SET stock = stock - ? WHERE id = ?", [quantidade, produto_id], (updErr) => {
-            if (updErr) {
-              db.run("ROLLBACK");
-              return res.status(500).json({ message: "Erro ao atualizar stock" });
-            }
-            
-            db.run(
-              "INSERT INTO movimentacoes_stock (produto_id, empresa_id, tipo, quantidade, usuario_id, descricao) VALUES (?, ?, ?, ?, ?, ?)",
-              [produto_id, req.empresaId, "saida", quantidade, req.userId, `Reserva criada: ${titular}`],
-              (movErr) => {
-                if (movErr) {
-                  db.run("ROLLBACK");
-                  return res.status(500).json({ message: "Erro ao registar movimento" });
-                }
-                db.run("COMMIT");
-                res.json({ id: resId, message: "Reserva criada com sucesso" });
-              }
-            );
-          });
-        }
-      );
+      return resId;
     });
-  });
+
+    const resId = executeReserva();
+    res.json({ id: resId, message: "Reserva criada com sucesso" });
+  } catch (err) {
+    console.error("Erro ao criar reserva:", err.message);
+    res.status(500).json({ message: "Erro ao criar reserva" });
+  }
 });
 
 app.get("/api/reservas", verifyToken, (req, res) => {
-  db.all(
-    `SELECT r.*, p.nome AS produto_nome, u.nome AS usuario_nome 
-     FROM reservas r
-     JOIN produtos p ON r.produto_id = p.id
-     JOIN usuarios u ON r.usuario_id = u.id
-     WHERE r.empresa_id = ?
-     ORDER BY r.criado_em DESC`,
-    [req.empresaId],
-    (err, rows) => {
-      if (err) return res.status(500).json({ message: "Erro ao buscar reservas" });
-      res.json(rows);
-    }
-  );
+  try {
+    const rows = db.prepare(
+      `SELECT r.*, p.nome AS produto_nome, u.nome AS usuario_nome 
+       FROM reservas r
+       JOIN produtos p ON r.produto_id = p.id
+       JOIN usuarios u ON r.usuario_id = u.id
+       WHERE r.empresa_id = ?
+       ORDER BY r.criado_em DESC`
+    ).all(req.empresaId);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar reservas" });
+  }
 });
 
 app.put("/api/reservas/:id/status", verifyToken, (req, res) => {
   const { id } = req.params;
   const { status } = req.body; // "Activa", "Levantada", "Cancelada"
 
-  db.get("SELECT * FROM reservas WHERE id = ? AND empresa_id = ?", [id, req.empresaId], (err, reserva) => {
-    if (err || !reserva) return res.status(404).json({ message: "Reserva não encontrada" });
+  try {
+    const reserva = db.prepare("SELECT * FROM reservas WHERE id = ? AND empresa_id = ?").get(id, req.empresaId);
+    if (!reserva) return res.status(404).json({ message: "Reserva não encontrada" });
 
     if (status === "Cancelada" && reserva.status !== "Cancelada") {
       // Devolver stock se cancelar
-      db.serialize(() => {
-        db.run("BEGIN TRANSACTION");
-        db.run("UPDATE reservas SET status = ?, atualizado_em = CURRENT_TIMESTAMP WHERE id = ?", [status, id]);
-        db.run("UPDATE produtos SET stock = stock + ? WHERE id = ?", [reserva.quantidade, reserva.produto_id]);
-        db.run(
-          "INSERT INTO movimentacoes_stock (produto_id, empresa_id, tipo, quantidade, usuario_id, descricao) VALUES (?, ?, ?, ?, ?, ?)",
-          [reserva.produto_id, req.empresaId, "entrada", reserva.quantidade, req.userId, `Reserva cancelada: ${reserva.titular}`],
-          (movErr) => {
-            if (movErr) {
-              db.run("ROLLBACK");
-              return res.status(500).json({ message: "Erro ao cancelar reserva" });
-            }
-            db.run("COMMIT");
-            res.json({ message: "Reserva cancelada e stock devolvido" });
-          }
-        );
+      const cancelReserva = db.transaction(() => {
+        db.prepare("UPDATE reservas SET status = ?, atualizado_em = CURRENT_TIMESTAMP WHERE id = ?").run(status, id);
+        db.prepare("UPDATE produtos SET stock = stock + ? WHERE id = ?").run(reserva.quantidade, reserva.produto_id);
+        db.prepare(
+          "INSERT INTO movimentacoes_stock (produto_id, empresa_id, tipo, quantidade, usuario_id, descricao) VALUES (?, ?, ?, ?, ?, ?)"
+        ).run(reserva.produto_id, req.empresaId, "entrada", reserva.quantidade, req.userId, `Reserva cancelada: ${reserva.titular}`);
       });
+      cancelReserva();
+      res.json({ message: "Reserva cancelada e stock devolvido" });
     } else {
-      db.run("UPDATE reservas SET status = ?, atualizado_em = CURRENT_TIMESTAMP WHERE id = ?", [status, id], (updErr) => {
-        if (updErr) return res.status(500).json({ message: "Erro ao atualizar status" });
-        res.json({ message: "Status da reserva atualizado" });
-      });
+      db.prepare("UPDATE reservas SET status = ?, atualizado_em = CURRENT_TIMESTAMP WHERE id = ?").run(status, id);
+      res.json({ message: "Status da reserva atualizado" });
     }
-  });
+  } catch (err) {
+    console.error("Erro ao atualizar reserva:", err.message);
+    res.status(500).json({ message: "Erro ao atualizar reserva" });
+  }
 });
 
 // ===== ROTAS DE EMPRESA (CONFIGURAÇÕES) =====
 app.get("/api/empresa", verifyToken, (req, res) => {
-  db.get("SELECT * FROM empresas WHERE id = ?", [req.empresaId], (err, row) => {
-    if (err || !row) return res.status(404).json({ message: "Empresa não encontrada" });
+  try {
+    const row = db.prepare("SELECT * FROM empresas WHERE id = ?").get(req.empresaId);
+    if (!row) return res.status(404).json({ message: "Empresa não encontrada" });
     res.json(row);
-  });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar empresa" });
+  }
 });
 
 app.put("/api/empresa", verifyToken, (req, res) => {
   const { nome, cnpj, endereco, telefone, email, background_image } = req.body;
   if (!nome) return res.status(400).json({ message: "Nome da empresa é obrigatório" });
 
-  db.run(
-    "UPDATE empresas SET nome = ?, cnpj = ?, endereco = ?, telefone = ?, email = ?, background_image = ? WHERE id = ?",
-    [nome, cnpj, endereco, telefone, email, background_image, req.empresaId],
-    function (err) {
-      if (err) return res.status(500).json({ message: "Erro ao atualizar empresa" });
-      res.json({ message: "Dados da empresa atualizados com sucesso" });
-    }
-  );
+  try {
+    db.prepare(
+      "UPDATE empresas SET nome = ?, cnpj = ?, endereco = ?, telefone = ?, email = ?, background_image = ? WHERE id = ?"
+    ).run(nome, cnpj, endereco, telefone, email, background_image, req.empresaId);
+    res.json({ message: "Dados da empresa atualizados com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao atualizar empresa" });
+  }
 });
 
 // Alterar senha do próprio usuário
@@ -1648,34 +1558,35 @@ app.put("/api/usuarios/me/senha", verifyToken, (req, res) => {
   const { senhaAtual, novaSenha } = req.body;
   if (!senhaAtual || !novaSenha) return res.status(400).json({ message: "Informe a senha atual e a nova senha" });
 
-  db.get("SELECT senha FROM usuarios WHERE id = ?", [req.userId], (err, user) => {
-    if (err || !user) return res.status(404).json({ message: "Usuário não encontrado" });
+  try {
+    const user = db.prepare("SELECT senha FROM usuarios WHERE id = ?").get(req.userId);
+    if (!user) return res.status(404).json({ message: "Usuário não encontrado" });
 
     const valid = bcrypt.compareSync(senhaAtual, user.senha);
     if (!valid) return res.status(401).json({ message: "Senha atual incorreta" });
 
     const hashed = bcrypt.hashSync(novaSenha, 10);
-    db.run("UPDATE usuarios SET senha = ? WHERE id = ?", [hashed, req.userId], (updErr) => {
-      if (updErr) return res.status(500).json({ message: "Erro ao atualizar senha" });
-      res.json({ message: "Senha atualizada com sucesso" });
-    });
-  });
+    db.prepare("UPDATE usuarios SET senha = ? WHERE id = ?").run(hashed, req.userId);
+    res.json({ message: "Senha atualizada com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao atualizar senha" });
+  }
 });
 
 // ===== ROTAS FINANCEIRAS =====
 app.get("/api/financeiro", verifyToken, (req, res) => {
-  db.all(
-    `SELECT t.*, u.nome as usuario_nome 
-     FROM transacoes_financeiras t
-     LEFT JOIN usuarios u ON t.usuario_id = u.id
-     WHERE t.empresa_id = ? 
-     ORDER BY t.data DESC LIMIT 500`,
-    [req.empresaId],
-    (err, rows) => {
-      if (err) return res.status(500).json({ message: "Erro ao buscar histórico financeiro" });
-      res.json(rows);
-    }
-  );
+  try {
+    const rows = db.prepare(
+      `SELECT t.*, u.nome as usuario_nome 
+       FROM transacoes_financeiras t
+       LEFT JOIN usuarios u ON t.usuario_id = u.id
+       WHERE t.empresa_id = ? 
+       ORDER BY t.data DESC LIMIT 500`
+    ).all(req.empresaId);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar histórico financeiro" });
+  }
 });
 
 app.post("/api/financeiro", verifyToken, (req, res) => {
@@ -1685,56 +1596,48 @@ app.post("/api/financeiro", verifyToken, (req, res) => {
     return res.status(400).json({ message: "Tipo, valor e categoria são obrigatórios" });
   }
 
-  db.run(
-    `INSERT INTO transacoes_financeiras 
-     (empresa_id, usuario_id, tipo, categoria, valor, metodo_pagamento, entidade_nome, observacao, data) 
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`,
-    [req.empresaId, req.userId, tipo, categoria, Number(valor), metodo_pagamento, entidade_nome, observacao, data],
-    function(err) {
-      if (err) return res.status(500).json({ message: "Erro ao registar transação financeira" });
-      res.json({ id: this.lastID, message: "Transação registada com sucesso" });
-    }
-  );
+  try {
+    const info = db.prepare(
+      `INSERT INTO transacoes_financeiras 
+       (empresa_id, usuario_id, tipo, categoria, valor, metodo_pagamento, entidade_nome, observacao, data) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
+    ).run(req.empresaId, req.userId, tipo, categoria, Number(valor), metodo_pagamento, entidade_nome, observacao, data);
+    res.json({ id: info.lastInsertRowid, message: "Transação registada com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao registar transação financeira" });
+  }
 });
 
 // ===== ROTAS DE DASHBOARD =====
 app.get("/api/dashboard/stats", verifyToken, (req, res) => {
   const empresaId = req.empresaId;
 
-  db.all(
+  try {
+    const stats = db.prepare(
+      `
+      SELECT 
+        (SELECT COUNT(*) FROM produtos WHERE empresa_id = ?) as totalProdutos,
+        (SELECT COUNT(*) FROM vendas WHERE empresa_id = ?) as totalVendas,
+        (SELECT SUM(total) FROM vendas WHERE empresa_id = ?) as totalVendido
     `
-    SELECT 
-      (SELECT COUNT(*) FROM produtos WHERE empresa_id = ?) as totalProdutos,
-      (SELECT COUNT(*) FROM vendas WHERE empresa_id = ?) as totalVendas,
-      (SELECT SUM(total) FROM vendas WHERE empresa_id = ?) as totalVendido
-  `,
-    [empresaId, empresaId, empresaId],
-    (err, rows) => {
-      if (err) {
-        return res.status(500).json({ message: "Erro ao buscar estatísticas" });
-      }
-      res.json(rows[0]);
-    }
-  );
+    ).get(empresaId, empresaId, empresaId);
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar estatísticas" });
+  }
 });
 
-// ===== ROTAS SUPER ADMIN (STATS) - DESACTIVADO LOCALMENTE =====
-app.get("/api/super/stats", verifyToken, (req, res) => {
-  return res.status(403).json({ message: "Acesso negado. Gerencie via Painel Web." });
-});
-
-// Health check
-app.get("/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
+// ...
 
 // ===== ROTAS SUPER ADMIN (EMPRESAS) =====
 app.get("/api/super/empresas", verifyToken, (req, res) => {
   if (req.role !== "super") return res.status(403).json({ message: "Acesso negado" });
-  db.all("SELECT e.*, (SELECT COUNT(*) FROM usuarios WHERE empresa_id = e.id) as vendedores FROM empresas e ORDER BY e.nome", [], (err, rows) => {
-    if (err) return res.status(500).json({ message: "Erro ao buscar empresas" });
+  try {
+    const rows = db.prepare("SELECT e.*, (SELECT COUNT(*) FROM usuarios WHERE empresa_id = e.id) as vendedores FROM empresas e ORDER BY e.nome").all();
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar empresas" });
+  }
 });
 
 app.post("/api/super/empresas", verifyToken, (req, res) => {
@@ -1742,25 +1645,17 @@ app.post("/api/super/empresas", verifyToken, (req, res) => {
   const { nome, plano, data_expiracao, ativo } = req.body;
   if (!nome) return res.status(400).json({ message: "Nome é obrigatório" });
   
-  db.run("INSERT INTO empresas (nome, plano, data_expiracao, ativo) VALUES (?, ?, ?, ?)", 
-    [nome, plano || "Mensal", data_expiracao || null, ativo ?? 1], 
-    function(err) {
-      if (err) return res.status(500).json({ message: "Erro ao criar empresa" });
-      res.json({ id: this.lastID, message: "Empresa criada com sucesso" });
-    }
-  );
+  try {
+    const info = db.prepare("INSERT INTO empresas (nome, plano, data_expiracao, ativo) VALUES (?, ?, ?, ?)").run(
+      nome, plano || "Mensal", data_expiracao || null, ativo ?? 1
+    );
+    res.json({ id: info.lastInsertRowid, message: "Empresa criada com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao criar empresa" });
+  }
 });
 
-// Helper para gerar chave de licença
-function generateLicenseKey() {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  let key = "";
-  for (let i = 0; i < 16; i++) {
-    if (i > 0 && i % 4 === 0) key += "-";
-    key += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return key;
-}
+// ...
 
 app.post("/api/super/empresas/completo", verifyToken, async (req, res) => {
   if (req.role !== "super") return res.status(403).json({ message: "Acesso negado" });
@@ -1771,66 +1666,63 @@ app.post("/api/super/empresas/completo", verifyToken, async (req, res) => {
     return res.status(400).json({ message: "Dados obrigatórios ausentes" });
   }
 
-  // 1. Criar Empresa localmente
-  db.run(
-    "INSERT INTO empresas (nome, bi, empresario_nome, email, plano, data_expiracao, ativo) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [nomeEmpresa, bi, nomeEmpresario, email, plano || "Mensal", dataExpiracao || null, 1],
-    async function (err) {
-      if (err) {
-        console.error("Erro ao criar empresa:", err.message);
-        return res.status(500).json({ message: "Erro ao criar empresa local" });
-      }
+  try {
+    const result = db.transaction(() => {
+      // 1. Criar Empresa localmente
+      const infoEmpresa = db.prepare(
+        "INSERT INTO empresas (nome, bi, empresario_nome, email, plano, data_expiracao, ativo) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(nomeEmpresa, bi, nomeEmpresario, email, plano || "Mensal", dataExpiracao || null, 1);
 
-      const empresaId = this.lastID;
+      const empresaId = infoEmpresa.lastInsertRowid;
 
       // 2. Criar Gestor localmente
       const salt = bcrypt.genSaltSync(10);
       const hash = bcrypt.hashSync(senha, salt);
 
-      db.run(
-        "INSERT INTO usuarios (nome, email, senha, role, empresa_id, ativo) VALUES (?, ?, ?, ?, ?, ?)",
-        [nomeEmpresario, email, hash, 'gestor', empresaId, 1],
-        async function (userErr) {
-          if (userErr) {
-            console.error("Erro ao criar gestor:", userErr.message);
-            return res.status(500).json({ message: "Erro ao criar gestor local" });
-          }
+      const infoUser = db.prepare(
+        "INSERT INTO usuarios (nome, email, senha, role, empresa_id, ativo) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(nomeEmpresario, email, hash, 'gestor', empresaId, 1);
 
-          // 3. Criar Licença no Supabase (se aplicável)
-          let licenseKey = "";
-          if (process.env.IS_LICENSING_SERVER && supabase) {
-            licenseKey = generateLicenseKey();
-            const expiresAt = dataExpiracao ? new Date(dataExpiracao) : new Date();
-            if (!dataExpiracao) {
-              if (plano === "Anual") expiresAt.setFullYear(expiresAt.getFullYear() + 1);
-              else expiresAt.setMonth(expiresAt.getMonth() + 1);
-            }
+      return empresaId;
+    })();
 
-            try {
-              const { error } = await supabase.from("licenses").insert({
-                license_key: licenseKey,
-                company_name: nomeEmpresa,
-                plan: plano === "Anual" ? "yearly" : "monthly",
-                status: "pending",
-                expires_at: expiresAt.toISOString()
-              });
+    const empresaId = result;
 
-              if (error) throw error;
-              console.log(`[SUPER] Licença criada no Supabase: ${licenseKey}`);
-            } catch (supaErr) {
-              console.error("Erro ao criar licença no Supabase:", supaErr.message);
-            }
-          }
+    // 3. Criar Licença no Supabase (se aplicável)
+    let licenseKey = "";
+    if (process.env.IS_LICENSING_SERVER && supabase) {
+      licenseKey = generateLicenseKey();
+      const expiresAt = dataExpiracao ? new Date(dataExpiracao) : new Date();
+      if (!dataExpiracao) {
+        if (plano === "Anual") expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+        else expiresAt.setMonth(expiresAt.getMonth() + 1);
+      }
 
-          res.json({
-            message: "Empresa, Gestor e Licença criados com sucesso!",
-            empresaId,
-            licenseKey: licenseKey || "Offline-Mode"
-          });
-        }
-      );
+      try {
+        const { error } = await supabase.from("licenses").insert({
+          license_key: licenseKey,
+          company_name: nomeEmpresa,
+          plan: plano === "Anual" ? "yearly" : "monthly",
+          status: "pending",
+          expires_at: expiresAt.toISOString()
+        });
+
+        if (error) throw error;
+        console.log(`[SUPER] Licença criada no Supabase: ${licenseKey}`);
+      } catch (supaErr) {
+        console.error("Erro ao criar licença no Supabase:", supaErr.message);
+      }
     }
-  );
+
+    res.json({
+      message: "Empresa, Gestor e Licença criados com sucesso!",
+      empresaId,
+      licenseKey: licenseKey || "Offline-Mode"
+    });
+  } catch (err) {
+    console.error("Erro ao criar empresa completa:", err.message);
+    res.status(500).json({ message: "Erro ao criar empresa local" });
+  }
 });
 
 app.put("/api/super/empresas/:id", verifyToken, (req, res) => {
@@ -1838,13 +1730,12 @@ app.put("/api/super/empresas/:id", verifyToken, (req, res) => {
   const { id } = req.params;
   const { nome, plano, data_expiracao, ativo } = req.body;
   
-  db.run("UPDATE empresas SET nome = COALESCE(?, nome), plano = COALESCE(?, plano), data_expiracao = COALESCE(?, data_expiracao), ativo = COALESCE(?, ativo) WHERE id = ?",
-    [nome, plano, data_expiracao, ativo, id],
-    function(err) {
-      if (err) return res.status(500).json({ message: "Erro ao atualizar empresa" });
-      res.json({ message: "Empresa atualizada com sucesso" });
-    }
-  );
+  try {
+    db.prepare("UPDATE empresas SET nome = COALESCE(?, nome), plano = COALESCE(?, plano), data_expiracao = COALESCE(?, data_expiracao), ativo = COALESCE(?, ativo) WHERE id = ?").run(nome, plano, data_expiracao, ativo, id);
+    res.json({ message: "Empresa atualizada com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao atualizar empresa" });
+  }
 });
 
 // ===== ROTAS DE USUÁRIOS =====
@@ -1859,10 +1750,12 @@ app.get("/api/usuarios", verifyToken, (req, res) => {
     params = [];
   }
 
-  db.all(query, params, (err, rows) => {
-    if (err) return res.status(500).json({ message: "Erro ao buscar utilizadores" });
+  try {
+    const rows = db.prepare(query).all(...params);
     res.json(rows.map(u => ({ ...u, permissoes: u.permissoes ? JSON.parse(u.permissoes) : [] })));
-  });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao buscar utilizadores" });
+  }
 });
 
 app.post("/api/usuarios", verifyToken, (req, res) => {
@@ -1876,13 +1769,14 @@ app.post("/api/usuarios", verifyToken, (req, res) => {
   const hashed = bcrypt.hashSync(senha, 10);
   const perms = Array.isArray(permissoes) ? JSON.stringify(permissoes) : "[]";
 
-  db.run("INSERT INTO usuarios (nome, email, senha, role, empresa_id, permissoes) VALUES (?, ?, ?, ?, ?, ?)",
-    [nome, email, hashed, targetRole, targetEmpresaId, perms],
-    function(err) {
-      if (err) return res.status(500).json({ message: "Erro ao criar utilizador: " + err.message });
-      res.json({ id: this.lastID, message: "Utilizador criado com sucesso" });
-    }
-  );
+  try {
+    const info = db.prepare("INSERT INTO usuarios (nome, email, senha, role, empresa_id, permissoes) VALUES (?, ?, ?, ?, ?, ?)").run(
+      nome, email, hashed, targetRole, targetEmpresaId, perms
+    );
+    res.json({ id: info.lastInsertRowid, message: "Utilizador criado com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao criar utilizador: " + err.message });
+  }
 });
 
 app.put("/api/usuarios/:id", verifyToken, (req, res) => {
@@ -1890,41 +1784,41 @@ app.put("/api/usuarios/:id", verifyToken, (req, res) => {
   const { id } = req.params;
   const { nome, email, role, ativo, permissoes } = req.body;
 
-  // Gestor só edita usuários da sua empresa e não pode promover para super
-  const checkQuery = req.role === "super" ? "SELECT id FROM usuarios WHERE id = ?" : "SELECT id FROM usuarios WHERE id = ? AND empresa_id = ?";
-  const checkParams = req.role === "super" ? [id] : [id, req.empresaId];
+  try {
+    const checkQuery = req.role === "super" ? "SELECT id FROM usuarios WHERE id = ?" : "SELECT id FROM usuarios WHERE id = ? AND empresa_id = ?";
+    const checkParams = req.role === "super" ? [id] : [id, req.empresaId];
 
-  db.get(checkQuery, checkParams, (err, row) => {
-    if (err || !row) return res.status(404).json({ message: "Utilizador não encontrado ou sem permissão" });
+    const row = db.prepare(checkQuery).get(...checkParams);
+    if (!row) return res.status(404).json({ message: "Utilizador não encontrado ou sem permissão" });
     
     const perms = Array.isArray(permissoes) ? JSON.stringify(permissoes) : undefined;
     const targetRole = req.role === "gestor" ? "vendedor" : role;
 
-    db.run("UPDATE usuarios SET nome = COALESCE(?, nome), email = COALESCE(?, email), role = COALESCE(?, role), ativo = COALESCE(?, ativo), permissoes = COALESCE(?, permissoes) WHERE id = ?",
-      [nome, email, targetRole, ativo, perms, id],
-      function(updErr) {
-        if (updErr) return res.status(500).json({ message: "Erro ao atualizar utilizador" });
-        res.json({ message: "Utilizador atualizado com sucesso" });
-      }
+    db.prepare("UPDATE usuarios SET nome = COALESCE(?, nome), email = COALESCE(?, email), role = COALESCE(?, role), ativo = COALESCE(?, ativo), permissoes = COALESCE(?, permissoes) WHERE id = ?").run(
+      nome, email, targetRole, ativo, perms, id
     );
-  });
+    res.json({ message: "Utilizador atualizado com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao atualizar utilizador" });
+  }
 });
 
 app.delete("/api/usuarios/:id", verifyToken, (req, res) => {
   if (req.role !== "super" && req.role !== "gestor") return res.status(403).json({ message: "Acesso negado" });
   const { id } = req.params;
 
-  const checkQuery = req.role === "super" ? "SELECT id FROM usuarios WHERE id = ?" : "SELECT id FROM usuarios WHERE id = ? AND empresa_id = ?";
-  const checkParams = req.role === "super" ? [id] : [id, req.empresaId];
+  try {
+    const checkQuery = req.role === "super" ? "SELECT id FROM usuarios WHERE id = ?" : "SELECT id FROM usuarios WHERE id = ? AND empresa_id = ?";
+    const checkParams = req.role === "super" ? [id] : [id, req.empresaId];
 
-  db.get(checkQuery, checkParams, (err, row) => {
-    if (err || !row) return res.status(404).json({ message: "Utilizador não encontrado ou sem permissão" });
+    const row = db.prepare(checkQuery).get(...checkParams);
+    if (!row) return res.status(404).json({ message: "Utilizador não encontrado ou sem permissão" });
     
-    db.run("DELETE FROM usuarios WHERE id = ?", [id], function(delErr) {
-      if (delErr) return res.status(500).json({ message: "Erro ao remover utilizador" });
-      res.json({ message: "Utilizador removido com sucesso" });
-    });
-  });
+    db.prepare("DELETE FROM usuarios WHERE id = ?").run(id);
+    res.json({ message: "Utilizador removido com sucesso" });
+  } catch (err) {
+    res.status(500).json({ message: "Erro ao remover utilizador" });
+  }
 });
 
 // Health check
