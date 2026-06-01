@@ -40,16 +40,14 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          npm ci
+          npm install
         env:
-          npm_config_build_from_source: true
           GYP_MSVS_VERSION: 2022
 
       - name: Build and Publish
         run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          npm_config_build_from_source: true
           GYP_MSVS_VERSION: 2022
 
       - name: Upload Artifacts
