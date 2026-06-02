@@ -240,7 +240,8 @@ ipcMain.handle("api:request", async (event, { method, endpoint, data, token }) =
     return result;
   } catch (error) {
     console.error("[IPC Error]", error);
-    return { error: error.message };
+    // Lançar o erro para que a promessa no renderizador seja rejeitada
+    throw error;
   }
 });
 

@@ -44,6 +44,11 @@ class APIClient {
       if (this.isElectron && window.electronAPI) {
         // Usar IPC quando em Electron
         response = await window.electronAPI.request(method, endpoint, data);
+        
+        // Se o IPC retornar um objeto com erro, lançar como exceção
+        if (response && response.error) {
+          throw new Error(response.error);
+        }
       } else {
         // Usar fetch direto no browser
         response = await fetch(url, options);

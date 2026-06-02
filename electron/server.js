@@ -516,13 +516,16 @@ app.post("/api/activate", async (req, res) => {
   const device_id = getDeviceId();
   const ip = req.ip;
 
-  console.log(`[LICENSE] Tentativa de ativação: Key=${license_key}, Device=${device_id}, IP=${ip}`);
+  console.log(`[LICENSE] Tentativa de ativação: Key=${license_key}, Device=${device_id}`);
 
   if (!license_key) return res.status(400).json({ message: "Chave de licença obrigatória" });
 
   try {
-    if (process.env.IS_LICENSING_SERVER && supabase) {
-      // 1. Verificar se a licença existe
+    let activationData = null;
+
+    // 1. Tentar ativação direta via Supabase se configurado
+    if (supabase) {
+      console.log("[LICENSE] Tentando ativação direta via Supabase...");
       const { data: license, error } = await supabase
         .from("licenses")
         .select("*")
@@ -530,25 +533,22 @@ app.post("/api/activate", async (req, res) => {
         .single();
 
       if (error || !license) {
-        console.warn(`[LICENSE] Licença inválida tentada: ${license_key}`);
-        return res.status(404).json({ message: "Chave de licença não encontrada ou inválida." });
+        return res.status(404).json({ message: "Chave de licença não encontrada ou inválida no Supabase." });
       }
 
-      // 2. Verificar se já está ativada em outro dispositivo
       if (license.device_id && license.device_id !== device_id) {
-        console.warn(`[LICENSE] Conflito de Device ID: Key=${license_key}, Existing=${license.device_id}, New=${device_id}`);
         return res.status(403).json({ message: "Esta licença já está vinculada a outro computador." });
       }
 
-      // 3. Calcular datas
       const isYearly = license.plan === "yearly";
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + (isYearly ? 365 : 30));
+      const expiresAt = license.expires_at ? new Date(license.expires_at) : new Date();
+      if (!license.expires_at) {
+        expiresAt.setDate(expiresAt.getDate() + (isYearly ? 365 : 30));
+      }
       
       const nextValidation = new Date();
       nextValidation.setDate(nextValidation.getDate() + 10);
 
-      // 4. Atualizar Supabase
       const { error: updError } = await supabase
         .from("licenses")
         .update({
@@ -566,36 +566,50 @@ app.post("/api/activate", async (req, res) => {
 
       if (updError) throw updError;
 
-      console.log(`[LICENSE] Ativação bem-sucedida: ${license_key} -> ${device_id}`);
-
-      return res.json({
+      activationData = {
         status: "active",
         expires_at: expiresAt.toISOString(),
-        next_validation_at: nextValidation.toISOString()
-      });
-    } else {
-      // MODO CLIENTE: Repassar para o servidor de licenciamento
+        next_validation_at: nextValidation.toISOString(),
+        company_name: company_name || license.company_name
+      };
+    } 
+    // 2. Se não houver Supabase, tentar via API remota
+    else {
       const apiUrl = process.env.REMOTE_LICENSE_API_URL;
-      if (!apiUrl) return res.status(500).json({ message: "Configuração de servidor remoto ausente." });
+      if (!apiUrl) return res.status(500).json({ message: "Configuração de conexão (Supabase ou API Remota) ausente." });
 
+      console.log("[LICENSE] Tentando ativação via API remota...");
       const response = await axios.post(`${apiUrl}/api/activate`, {
         license_key, company_name, phone, device_id
       });
+      activationData = response.data;
+    }
 
-      const { status, expires_at, next_validation_at } = response.data;
-      
-      // Guardar localmente para funcionamento offline
+    // 3. Guardar localmente para funcionamento offline (Sempre ocorre se a ativação acima deu certo)
+    if (activationData) {
       db.prepare(`
         INSERT OR REPLACE INTO local_license 
         (id, license_key, device_id, company_name, status, expires_at, last_validation_at, next_validation_at)
         VALUES (1, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(license_key, device_id, company_name, status, expires_at, new Date().toISOString(), next_validation_at);
+      ).run(
+        license_key, 
+        device_id, 
+        company_name || activationData.company_name, 
+        activationData.status, 
+        activationData.expires_at, 
+        new Date().toISOString(), 
+        activationData.next_validation_at
+      );
 
-      return res.json(response.data);
+      console.log(`[LICENSE] Ativação concluída e salva localmente: ${license_key}`);
+      return res.json(activationData);
     }
+
   } catch (err) {
     console.error("[LICENSE] Erro na ativação:", err.message);
-    res.status(500).json({ message: "Erro ao processar ativação: " + (err.response?.data?.message || err.message) });
+    res.status(500).json({ 
+      message: "Erro ao processar ativação: " + (err.response?.data?.message || err.message) 
+    });
   }
 });
 
@@ -606,91 +620,84 @@ app.post("/api/validate", async (req, res) => {
   const ip = req.ip;
 
   try {
-    if (process.env.IS_LICENSING_SERVER && supabase) {
+    let statusData = null;
+
+    // 1. Tentar validação direta via Supabase
+    if (supabase) {
+      console.log(`[VALIDATE] Validando chave ${license_key} via Supabase...`);
       const { data: license, error } = await supabase
         .from("licenses")
         .select("*")
         .eq("license_key", license_key)
         .single();
 
-      if (error || !license) return res.status(404).json({ message: "Licença inválida" });
+      if (error || !license) return res.status(404).json({ message: "Licença inválida no Supabase" });
       
-      // Segurança: Validar Device ID
       if (license.device_id && license.device_id !== device_id) {
         return res.status(403).json({ message: "Este dispositivo não tem permissão para usar esta licença." });
       }
 
       if (license.status === "blocked") {
-        return res.json({ status: "blocked", message: "Esta licença foi bloqueada pelo administrador." });
-      }
-
-      // Verificar expiração
-      if (new Date(license.expires_at) < new Date()) {
+        statusData = { status: "blocked", message: "Esta licença foi bloqueada pelo administrador." };
+      } else if (new Date(license.expires_at) < new Date()) {
         await supabase.from("licenses").update({ status: "expired" }).eq("license_key", license_key);
-        return res.json({ status: "expired", message: "Sua licença expirou." });
-      }
-
-      const nextValidation = new Date();
-      nextValidation.setDate(nextValidation.getDate() + 10);
-
-      const totalEmployees = await getLocalEmployeesCount();
-      console.log(`[VALIDATE] Sincronizando licença ${license_key}. Funcionários: ${totalEmployees}`);
-
-      const { data: updateData, error: updateError } = await supabase
-        .from("licenses")
-        .update({
-          last_validation_at: new Date().toISOString(),
-          next_validation_at: nextValidation.toISOString(),
-          version: version || license.version,
-          last_ip: ip,
-          device_id: device_id,
-          total_employees: totalEmployees
-        })
-        .eq("license_key", license_key)
-        .select();
-
-      if (updateError) {
-        console.error(`[VALIDATE ERROR] Falha ao atualizar Supabase:`, updateError.message);
+        statusData = { status: "expired", message: "Sua licença expirou." };
       } else {
-        console.log(`[VALIDATE SUCCESS] Supabase atualizado com sucesso. Dados retornados:`, updateData);
-      }
+        const nextValidation = new Date();
+        nextValidation.setDate(nextValidation.getDate() + 10);
+        const totalEmployees = await getLocalEmployeesCount();
 
-      return res.json({
-        status: license.status,
-        expires_at: license.expires_at,
-        next_validation_at: nextValidation.toISOString()
-      });
-    } else {
-      // MODO CLIENTE: Tentar validar com o servidor remoto
-      const apiUrl = process.env.REMOTE_LICENSE_API_URL;
-      let statusData;
+        await supabase
+          .from("licenses")
+          .update({
+            last_validation_at: new Date().toISOString(),
+            next_validation_at: nextValidation.toISOString(),
+            version: version || license.version,
+            last_ip: ip,
+            device_id: device_id,
+            total_employees: totalEmployees
+          })
+          .eq("license_key", license_key);
 
-      try {
-        const response = await axios.post(`${apiUrl}/api/validate`, { license_key, device_id, version });
-        statusData = response.data;
-        
-        // Atualizar cache local
-        db.prepare(`
-          UPDATE local_license SET 
-          status = ?, expires_at = ?, last_validation_at = ?, next_validation_at = ?
-          WHERE license_key = ?`
-        ).run(statusData.status, statusData.expires_at, new Date().toISOString(), statusData.next_validation_at, license_key);
-      } catch (err) {
-        // Fallback local se estiver offline (Permitido por até 10 dias pelo middleware checkLocalLicense)
-        const license = db.prepare("SELECT * FROM local_license WHERE license_key = ?").get(license_key);
-
-        if (!license) return res.status(404).json({ message: "Licença não encontrada localmente. Conecte-se à internet." });
-        
         statusData = {
           status: license.status,
           expires_at: license.expires_at,
-          next_validation_at: license.next_validation_at,
-          offline: true
+          next_validation_at: nextValidation.toISOString()
         };
       }
-
-      return res.json(statusData);
+    } 
+    // 2. Se não houver Supabase, tentar API remota
+    else {
+      const apiUrl = process.env.REMOTE_LICENSE_API_URL;
+      if (apiUrl) {
+        console.log("[VALIDATE] Tentando via API remota...");
+        const response = await axios.post(`${apiUrl}/api/validate`, { license_key, device_id, version });
+        statusData = response.data;
+      }
     }
+
+    // 3. Atualizar Cache Local ou Fallback Offline
+    if (statusData) {
+      db.prepare(`
+        UPDATE local_license SET 
+        status = ?, expires_at = ?, last_validation_at = ?, next_validation_at = ?
+        WHERE license_key = ?`
+      ).run(statusData.status, statusData.expires_at, new Date().toISOString(), statusData.next_validation_at, license_key);
+      
+      return res.json(statusData);
+    } else {
+      // Fallback local se estiver offline e sem comunicação
+      const license = db.prepare("SELECT * FROM local_license WHERE license_key = ?").get(license_key);
+      if (!license) return res.status(404).json({ message: "Licença não encontrada localmente. Conecte-se à internet." });
+      
+      return res.json({
+        status: license.status,
+        expires_at: license.expires_at,
+        next_validation_at: license.next_validation_at,
+        offline: true
+      });
+    }
+
   } catch (err) {
     console.error("[LICENSE] Erro na validação:", err.message);
     res.status(500).json({ message: "Erro na validação" });
