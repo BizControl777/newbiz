@@ -67,24 +67,70 @@ function createWindow() {
 
 function startBackend() {
   console.log("[Electron] Iniciando servidor backend...");
-  backendProcess = spawn("node", ["electron/server.js"], {
-    cwd: path.join(__dirname, ".."),
+  
+  // Detecção robusta se a aplicação está empacotada
+  // app.isPackaged pode falhar em algumas versões/ambientes, então usamos redundâncias
+  const isPackaged = app.isPackaged || !process.defaultApp || (process.mainModule && process.mainModule.filename.includes('app.asar'));
+  
+  // Em produção (empacotado), usamos o próprio executável do Electron para rodar o backend
+  // Isso resolve o erro "spawn node ENOENT" pois não depende do Node.js estar instalado no cliente
+  // Em desenvolvimento, mantemos 'node' para usar a versão do sistema se desejado
+  const nodePath = isPackaged ? process.execPath : "node";
+  
+  const appPath = app.getAppPath();
+  const serverPath = path.join(appPath, "electron", "server.js");
+  
+  console.log(`[Electron] Modo: ${isPackaged ? "PRODUÇÃO" : "DESENVOLVIMENTO"}`);
+  console.log(`[Electron] nodePath: ${nodePath}`);
+
+  const env = { 
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: "1"
+  };
+
+  // Em modo empacotado, o banco de dados DEVE ficar fora do ASAR (que é somente-leitura)
+  if (isPackaged) {
+    env.DB_PATH = path.join(app.getPath("userData"), "bizcontrol.db");
+    console.log(`[Electron] DB_PATH Produção: ${env.DB_PATH}`);
+  }
+
+  // Configuração do spawn
+  const spawnOptions = {
+    cwd: isPackaged ? path.dirname(process.execPath) : appPath,
     stdio: "pipe",
-  });
+    env,
+    windowsHide: true // Oculta a janela de terminal no Windows
+  };
 
-  backendProcess.stdout.on("data", (data) => {
-    console.log(`[Backend] ${data}`);
-  });
+  try {
+    backendProcess = spawn(nodePath, [serverPath], spawnOptions);
 
-  backendProcess.stderr.on("data", (data) => {
-    console.error(`[Backend Error] ${data}`);
-  });
+    backendProcess.stdout.on("data", (data) => {
+      console.log(`[Backend] ${data}`);
+    });
 
-  backendProcess.on("exit", (code) => {
-    if (code !== 0 && code !== null) {
-      console.error(`[Electron] Backend terminou com código ${code}`);
-    }
-  });
+    backendProcess.stderr.on("data", (data) => {
+      console.error(`[Backend Error] ${data}`);
+    });
+
+    backendProcess.on("exit", (code) => {
+      if (code !== 0 && code !== null) {
+        console.error(`[Electron] Backend terminou com código ${code}`);
+      }
+    });
+
+    backendProcess.on("error", (err) => {
+      console.error(`[Electron] Falha ao iniciar processo backend:`, err);
+      if (isPackaged) {
+        dialog.showErrorBox(
+          "Erro de Inicialização",
+          `Não foi possível iniciar o servidor interno.\n\nDetalhe: ${err.message}`
+        );
+      }
+    });
+  } catch (err) {
+    console.error(`[Electron] Erro ao tentar spawnar o backend:`, err);
+  }
 }
 
 async function waitForBackend() {
