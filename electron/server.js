@@ -13,16 +13,53 @@ import nodeMachineId from "node-machine-id";
 const { machineIdSync } = nodeMachineId;
 import axios from "axios";
 
-dotenv.config();
+// Carregamento dinâmico do .env conforme o ambiente
+const appRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const possibleEnvPaths = [
+  path.join(appRoot, ".env"), // Desenvolvimento
+  path.join(process.cwd(), ".env"), // Executável (mesma pasta)
+  path.join(path.dirname(process.execPath), ".env") // Executável (pasta do .exe)
+];
+
+// Se houver uma variável de ambiente DB_PATH, o .env provavelmente está na pasta de dados do usuário
+if (process.env.DB_PATH) {
+  possibleEnvPaths.push(path.join(path.dirname(process.env.DB_PATH), ".env"));
+}
+
+for (const envPath of possibleEnvPaths) {
+  if (fs.existsSync(envPath)) {
+    console.log(`[BACKEND] Carregando configurações de: ${envPath}`);
+    dotenv.config({ path: envPath });
+    break;
+  }
+}
 
 // Polyfill WebSocket para evitar erro no Node < 20 com Supabase
 if (typeof global.WebSocket === "undefined") {
   global.WebSocket = class {};
 }
 
+// Configurações Globais e Padrões de Produção
+const DEFAULTS = {
+  PORT: 3000,
+  JWT_SECRET: "seu_segredo_jwt_muito_seguro_aqui",
+  ADMIN_API_KEY: "chave_mestra_bizcontrol",
+  SUPABASE_URL: "https://fumeskdjohvhclnltlnv.supabase.co",
+  SUPABASE_KEY: "sb_secret_lT3AE9GChULI2BbtG7s5Hw_zDd7pfkS",
+  REMOTE_LICENSE_API_URL: "https://api.bizcontrol.com",
+  IS_LICENSING_SERVER: false
+};
+
+const PORT = process.env.PORT || DEFAULTS.PORT;
+const JWT_SECRET = process.env.JWT_SECRET || DEFAULTS.JWT_SECRET;
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || DEFAULTS.ADMIN_API_KEY;
+const IS_LICENSING_SERVER = process.env.IS_LICENSING_SERVER === "true" || DEFAULTS.IS_LICENSING_SERVER;
+const REMOTE_LICENSE_API_URL = process.env.REMOTE_LICENSE_API_URL || DEFAULTS.REMOTE_LICENSE_API_URL;
+
 // Supabase Setup
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY; // Usar Service Role no servidor intermediário
+const supabaseUrl = process.env.SUPABASE_URL || DEFAULTS.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || DEFAULTS.SUPABASE_KEY;
+
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey, {
   auth: {
     persistSession: false,
@@ -38,9 +75,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || "seu_segredo_jwt_muito_seguro_aqui";
-const ADMIN_API_KEY = process.env.ADMIN_API_KEY || "chave_mestra_bizcontrol";
 
 // Helper para ID de máquina
 const getDeviceId = () => {
@@ -116,7 +150,7 @@ app.use(bodyParser.json({ limit: "50mb" }));
 app.use(bodyParser.urlencoded({ limit: "50mb", extended: true }));
 
 // Aplicar checkLocalLicense apenas se não estivermos no modo "Licensing Server"
-if (!process.env.IS_LICENSING_SERVER) {
+if (!IS_LICENSING_SERVER) {
   app.use(checkLocalLicense);
 }
 
@@ -575,7 +609,7 @@ app.post("/api/activate", async (req, res) => {
     } 
     // 2. Se não houver Supabase, tentar via API remota
     else {
-      const apiUrl = process.env.REMOTE_LICENSE_API_URL;
+      const apiUrl = REMOTE_LICENSE_API_URL;
       if (!apiUrl) return res.status(500).json({ message: "Configuração de conexão (Supabase ou API Remota) ausente." });
 
       console.log("[LICENSE] Tentando ativação via API remota...");
@@ -668,7 +702,7 @@ app.post("/api/validate", async (req, res) => {
     } 
     // 2. Se não houver Supabase, tentar API remota
     else {
-      const apiUrl = process.env.REMOTE_LICENSE_API_URL;
+      const apiUrl = REMOTE_LICENSE_API_URL;
       if (apiUrl) {
         console.log("[VALIDATE] Tentando via API remota...");
         const response = await axios.post(`${apiUrl}/api/validate`, { license_key, device_id, version });
@@ -715,7 +749,7 @@ app.post("/api/block", async (req, res) => {
   }
 
   try {
-    if (process.env.IS_LICENSING_SERVER && supabase) {
+    if (IS_LICENSING_SERVER && supabase) {
       const { error } = await supabase
         .from("licenses")
         .update({ status: newStatus })
@@ -727,7 +761,7 @@ app.post("/api/block", async (req, res) => {
       res.json({ message: `Licença ${newStatus === "active" ? "desbloqueada" : "bloqueada"} com sucesso` });
     } else {
       // MODO CLIENTE: Repassar para o servidor de licenciamento
-      const apiUrl = process.env.REMOTE_LICENSE_API_URL;
+      const apiUrl = REMOTE_LICENSE_API_URL;
       if (!apiUrl) return res.status(500).json({ message: "Configuração de servidor remoto ausente." });
 
       const response = await axios.post(`${apiUrl}/api/block`, { license_key, api_key, status: newStatus });
@@ -757,12 +791,12 @@ app.get("/api/super/licenses", verifyToken, async (req, res) => {
   if (req.role !== "super") return res.status(403).json({ message: "Acesso negado" });
 
   try {
-    if (process.env.IS_LICENSING_SERVER && supabase) {
+    if (IS_LICENSING_SERVER && supabase) {
       const { data, error } = await supabase.from("licenses").select("*").order("created_at", { ascending: false });
       if (error) throw error;
       res.json(data);
     } else {
-      const apiUrl = process.env.REMOTE_LICENSE_API_URL;
+      const apiUrl = REMOTE_LICENSE_API_URL;
       const response = await axios.get(`${apiUrl}/api/super/licenses`, {
         params: { api_key: ADMIN_API_KEY }
       });
@@ -1711,7 +1745,7 @@ app.post("/api/super/empresas/completo", verifyToken, async (req, res) => {
 
     // 3. Criar Licença no Supabase (se aplicável)
     let licenseKey = "";
-    if (process.env.IS_LICENSING_SERVER && supabase) {
+    if (IS_LICENSING_SERVER && supabase) {
       licenseKey = generateLicenseKey();
       const expiresAt = dataExpiracao ? new Date(dataExpiracao) : new Date();
       if (!dataExpiracao) {
